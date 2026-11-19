@@ -1,0 +1,826 @@
+
+import { auth, db } from "./firebase.js";
+
+import {
+  collection,
+  getDocs,
+  doc,
+  runTransaction,
+  Timestamp,
+  serverTimestamp,
+  query,
+  where,
+  updateDoc
+} from "https://www.gstatic.com/firebasejs/13.4.0/firebase-firestore.js";
+
+import {
+  signInAnonymously,
+  onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/13.4.0/firebase-auth.js";
+
+const $ = (id) => document.getElementById(id);
+
+let currentRaffle = null;
+let selectedNumbers = [];
+let currentPublicTickets = [];
+let ticketPrice = 1000;
+let loadingRaffle = false;
+let activeReservation = null;
+
+function money(value) {
+  return "$" + Number(value).toLocaleString("es-AR");
+}
+
+
+let reservationCountdownInterval = null;
+
+function showReservationCountdown(expiresAtMillis) {
+  if (reservationCountdownInterval) {
+    clearInterval(reservationCountdownInterval);
+  }
+
+  let countdown = document.getElementById("reservationCountdown");
+
+  if (!countdown) {
+    countdown = document.createElement("div");
+    countdown.id = "reservationCountdown";
+
+    const notice = $("reservationNotice");
+    notice.insertAdjacentElement("afterend", countdown);
+  }
+
+  countdown.style.display = "block";
+  countdown.style.margin = "15px 0";
+  countdown.style.padding = "15px";
+  countdown.style.textAlign = "center";
+  countdown.style.borderRadius = "10px";
+  countdown.style.background = "#17251d";
+  countdown.style.color = "#00e676";
+  countdown.style.fontWeight = "bold";
+
+  function updateCountdown() {
+    const remaining = Math.max(
+      0,
+      Math.floor((expiresAtMillis - Date.now()) / 1000)
+    );
+
+    const minutes = Math.floor(remaining / 60);
+    const seconds = remaining % 60;
+
+    countdown.textContent =
+      "⏳ TIEMPO PARA PAGAR: " +
+      String(minutes).padStart(2, "0") +
+      ":" +
+      String(seconds).padStart(2, "0");
+
+    if (remaining <= 0) {
+      clearInterval(reservationCountdownInterval);
+      reservationCountdownInterval = null;
+
+      countdown.textContent =
+        "⌛ Tu reserva venció. Los números pueden volver a estar disponibles.";
+
+      countdown.style.color = "#ff5252";
+
+      loadRaffle();
+    }
+  }
+
+  updateCountdown();
+
+  reservationCountdownInterval = setInterval(
+    updateCountdown,
+    1000
+  );
+}
+
+
+// RECUPERAR LA RESERVA DEL PARTICIPANTE AL VOLVER A ENTRAR.
+async function restoreReservationCountdown() {
+  try {
+    if (!auth.currentUser || !currentRaffle) return;
+
+    const reservationsQuery = query(
+      collection(db, "reservations"),
+      where("uid", "==", auth.currentUser.uid),
+      where("raffleId", "==", currentRaffle.id)
+    );
+
+    const snapshot = await getDocs(reservationsQuery);
+    const now = Date.now();
+
+    const activeReservations = snapshot.docs
+      .map(document => ({
+        id: document.id,
+        ...document.data()
+      }))
+      .filter(reservation =>
+        reservation.status === "pending" &&
+        reservation.expiresAt?.toMillis?.() > now
+      );
+
+    if (!activeReservations.length) {
+      if (reservationCountdownInterval) {
+        clearInterval(reservationCountdownInterval);
+        reservationCountdownInterval = null;
+      }
+
+      activeReservation = null;
+
+      const paymentPanel = $("paymentPanel");
+      if (paymentPanel) {
+        paymentPanel.hidden = true;
+      }
+
+      const countdown = $("reservationCountdown");
+      if (countdown) {
+        countdown.style.display = "none";
+      }
+
+      return;
+    }
+
+    // Elegir la reserva activa con vencimiento más lejano.
+    activeReservations.sort((a, b) =>
+      b.expiresAt.toMillis() - a.expiresAt.toMillis()
+    );
+
+    const reservation = activeReservations[0];
+
+    $("reservationNotice").textContent =
+      "✅ Encontramos tu reserva. Todavía tenés tiempo para completar el pago.";
+
+    $("reservationNotice").hidden = false;
+    $("reservationNotice").style.display = "block";
+
+    // MOSTRAR EL PANEL DE PAGO.
+    showPaymentPanel(reservation);
+
+    // RECUPERAR EL CONTADOR.
+    showReservationCountdown(
+      reservation.expiresAt.toMillis()
+    );
+
+  } catch (error) {
+    console.warn(
+      "No se pudo recuperar la reserva del participante:",
+      error
+    );
+  }
+}
+const paymentAccounts = {
+  mercadopago: {
+    title: "Mercado Pago",
+    alias: "zeka23.ok",
+    cbu: "0000003100074625021621"
+  },
+  naranjax: {
+    title: "Naranja X",
+    alias: "zeka.ok",
+    cbu: "4530000800018800623785"
+  },
+  cuentadni: {
+    title: "Cuenta DNI",
+    alias: "zeka.mateo.ok",
+    cbu: "0140301303666259321902"
+  }
+};
+
+function showPaymentPanel(reservation) {
+  activeReservation = reservation;
+
+  const panel = document.getElementById("paymentPanel");
+  const method = document.getElementById("paymentMethod");
+  const total = document.getElementById("paymentTotal");
+
+  if (!panel || !method || !total) return;
+
+  panel.hidden = false;
+  total.textContent = money(reservation.total || 0);
+
+  method.value = reservation.paymentMethod || "";
+
+  updatePaymentDetails();
+}
+
+
+function updatePaymentDetails() {
+  const method = $("paymentMethod").value;
+  const account = paymentAccounts[method];
+
+  const details = $("paymentDetails");
+  const panel = $("paymentPanel");
+  const title = $("paymentTitle");
+  const colors = {
+    mercadopago: {
+      background: "#009EE3",
+      border: "#0077B6",
+      text: "#FFFFFF"
+    },
+    naranjax: {
+      background: "#FF6B00",
+      border: "#D95700",
+      text: "#FFFFFF"
+    },
+    cuentadni: {
+      background: "#123B70",
+      border: "#55B9E8",
+      text: "#FFFFFF"
+    }
+  };
+
+  if (!account) {
+    details.hidden = true;
+    panel.style.borderColor = "";
+    panel.style.background = "";
+    return;
+  }
+
+  const color = colors[method];
+
+  details.hidden = false;
+
+  title.textContent = account.title;
+  $("paymentAlias").textContent = account.alias;
+  $("paymentCbu").textContent = account.cbu;
+
+  panel.style.border = "2px solid " + color.border;
+  panel.style.background = color.background;
+  panel.style.color = color.text;
+  panel.style.borderRadius = "14px";
+  panel.style.padding = "18px";
+
+  title.style.color = color.text;
+
+  $("paymentAlias").style.color = color.text;
+  $("paymentCbu").style.color = color.text;
+
+  $("paymentMethod").style.background = color.background;
+  $("paymentMethod").style.color = color.text;
+  $("paymentMethod").style.border = "2px solid " + color.border;
+}
+
+
+document.getElementById("paymentMethod").addEventListener("change", updatePaymentDetails);
+
+async function copyPaymentText(elementId) {
+  const text = document.getElementById(elementId).textContent;
+
+  try {
+    await navigator.clipboard.writeText(text);
+    document.getElementById("paymentMessage").textContent = "¡Copiado correctamente!";
+  } catch (error) {
+    document.getElementById("paymentMessage").textContent =
+      "No se pudo copiar. Mantené presionado el dato para copiarlo.";
+  }
+}
+
+document.getElementById("copyAliasBtn").addEventListener("click", () => {
+  copyPaymentText("paymentAlias");
+});
+
+document.getElementById("copyCbuBtn").addEventListener("click", () => {
+  copyPaymentText("paymentCbu");
+});
+
+document.getElementById("paymentDoneBtn").addEventListener("click", async () => {
+  const method = document.getElementById("paymentMethod").value;
+  const message = document.getElementById("paymentMessage");
+  const button = document.getElementById("paymentDoneBtn");
+
+  if (!activeReservation) {
+    message.textContent = "No se encontró una reserva activa.";
+    return;
+  }
+
+  if (!method || !paymentAccounts[method]) {
+    message.textContent = "Primero seleccioná un medio de pago.";
+    return;
+  }
+
+  if (activeReservation.status !== "pending") {
+    message.textContent = "Esta reserva ya no está pendiente.";
+    return;
+  }
+
+  button.disabled = true;
+  message.textContent = "Registrando aviso de pago...";
+
+  try {
+    await updateDoc(
+      doc(db, "reservations", activeReservation.id),
+      {
+        paymentMethod: method,
+        paymentReported: true,
+        paymentReportedAt: serverTimestamp()
+      }
+    );
+
+    activeReservation.paymentMethod = method;
+    activeReservation.paymentReported = true;
+
+    message.textContent =
+      "¡Pago informado! El administrador verificará tu transferencia.";
+
+  } catch (error) {
+    console.error(error);
+    message.textContent = "No se pudo informar el pago. Intentá nuevamente.";
+  } finally {
+    button.disabled = false;
+  }
+});
+
+function isAvailable(ticket) {
+  if (ticket.status === "available") return true;
+
+  if (
+    ticket.status === "reserved" &&
+    ticket.expiresAt?.toMillis &&
+    ticket.expiresAt.toMillis() <= Date.now()
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+// LIBERAR RESERVAS VENCIDAS DE FORMA SEGURA.
+async function releaseExpiredTickets(raffleId, publicTickets) {
+  const now = Date.now();
+
+  const expiredTickets = publicTickets.filter(ticket =>
+    ticket.status === "reserved" &&
+    ticket.expiresAt?.toMillis?.() <= now
+  );
+
+  if (!expiredTickets.length) return false;
+
+  let releasedAny = false;
+
+  // Trabajar en grupos pequeños para evitar transacciones grandes.
+  for (let start = 0; start < expiredTickets.length; start += 100) {
+    const group = expiredTickets.slice(start, start + 100);
+
+    try {
+      const released = await runTransaction(db, async (transaction) => {
+        const documents = [];
+
+        // Primero leer todos los documentos.
+        for (const ticket of group) {
+          const number = String(ticket.number).padStart(3, "0");
+
+          const privateRef = doc(
+            db, "raffles", raffleId, "tickets", number
+          );
+
+          const publicRef = doc(
+            db, "raffles", raffleId, "publicTickets", number
+          );
+
+          const privateSnap = await transaction.get(privateRef);
+          const publicSnap = await transaction.get(publicRef);
+
+          documents.push({
+            privateRef,
+            publicRef,
+            privateSnap,
+            publicSnap
+          });
+        }
+
+        const toRelease = [];
+
+        // Verificar que cada número siga perteneciendo a esa reserva.
+        for (const item of documents) {
+          if (!item.privateSnap.exists() || !item.publicSnap.exists()) {
+            continue;
+          }
+
+          const privateTicket = item.privateSnap.data();
+          const publicTicket = item.publicSnap.data();
+
+          const privateExpired =
+            privateTicket.expiresAt?.toMillis?.() <= Date.now();
+
+          const publicExpired =
+            publicTicket.expiresAt?.toMillis?.() <= Date.now();
+
+          const sameReservation =
+            privateTicket.reservationUid &&
+            privateTicket.reservationUid === publicTicket.reservationUid &&
+            privateTicket.reservationId;
+
+          if (
+            privateTicket.status === "reserved" &&
+            publicTicket.status === "reserved" &&
+            privateTicket.paid !== true &&
+            privateExpired &&
+            publicExpired &&
+            sameReservation
+          ) {
+            toRelease.push(item);
+          }
+        }
+
+        // Actualizar solamente después de terminar todas las lecturas.
+        for (const item of toRelease) {
+          transaction.update(item.privateRef, {
+            status: "available",
+            paid: false,
+            participantName: null,
+            participantPhone: null,
+            reservationId: null,
+            reservationUid: null,
+            expiresAt: null
+          });
+
+          transaction.update(item.publicRef, {
+            status: "available",
+            reservationUid: null,
+            expiresAt: null
+          });
+        }
+
+        return toRelease.length > 0;
+      });
+
+      if (released) releasedAny = true;
+
+    } catch (error) {
+      console.warn(
+        "No se pudieron liberar algunos números vencidos:",
+        error
+      );
+    }
+  }
+
+  return releasedAny;
+}
+
+function updateSelection() {
+  $("selectedNumbers").textContent =
+    selectedNumbers.length
+      ? selectedNumbers.map(n => String(n).padStart(3, "0")).join(", ")
+      : "Todavía no seleccionaste números.";
+
+  $("totalPrice").textContent =
+    money(selectedNumbers.length * ticketPrice);
+
+  $("participateBtn").disabled = selectedNumbers.length === 0;
+}
+
+function renderNumbers(publicTickets, quantity) {
+  const grid = $("numbersGrid");
+  grid.replaceChildren();
+
+  if (publicTickets.length !== quantity) {
+    grid.textContent =
+      "La disponibilidad todavía no está publicada.";
+    return;
+  }
+
+  publicTickets.sort((a, b) => Number(a.number) - Number(b.number));
+
+  publicTickets.forEach(ticket => {
+    const number = Number(ticket.number);
+    const button = document.createElement("button");
+
+    button.type = "button";
+    button.className = "number";
+    button.textContent = String(number).padStart(3, "0");
+
+    if (isAvailable(ticket)) {
+      button.classList.add("available");
+
+      if (selectedNumbers.includes(number)) {
+        button.classList.add("selected");
+      }
+
+      button.addEventListener("click", () => {
+        if (selectedNumbers.includes(number)) {
+          selectedNumbers = selectedNumbers.filter(n => n !== number);
+        } else {
+          selectedNumbers.push(number);
+        }
+
+        renderNumbers(currentPublicTickets, quantity);
+        updateSelection();
+      });
+
+    } else {
+      button.classList.add("occupied");
+      button.disabled = true;
+    }
+
+    grid.appendChild(button);
+  });
+}
+
+async function loadRaffle() {
+  if (loadingRaffle) return;
+
+  loadingRaffle = true;
+
+  try {
+    $("raffleStatus").textContent = "Consultando Firebase...";
+
+    const raffleSnapshot = await getDocs(
+      collection(db, "raffles")
+    );
+
+    const raffles = raffleSnapshot.docs
+      .map(document => ({
+        id: document.id,
+        ...document.data()
+      }))
+      .filter(raffle => raffle.status === "open")
+      .sort((a, b) => {
+        const timeA = a.createdAt?.toMillis?.() || 0;
+        const timeB = b.createdAt?.toMillis?.() || 0;
+        return timeB - timeA;
+      });
+
+    if (!raffles.length) {
+      currentRaffle = null;
+      $("raffleName").textContent = "No hay sorteos activos";
+      $("raffleStatus").textContent = "Sin sorteo";
+      $("numbersGrid").textContent =
+        "Próximamente habrá nuevos sorteos.";
+      return;
+    }
+
+    currentRaffle = raffles[0];
+    ticketPrice = Number(currentRaffle.price) || 1000;
+
+    $("raffleName").textContent = currentRaffle.name;
+    $("raffleStatus").textContent = "Sorteo disponible";
+    $("ticketPrice").textContent = money(ticketPrice);
+    $("totalNumbers").textContent = currentRaffle.quantity;
+
+    const winners = $("winnerCount");
+    if (winners) winners.textContent = currentRaffle.winners;
+
+    const sold = Number(currentRaffle.soldCount) || 0;
+    const quantity = Number(currentRaffle.quantity) || 0;
+
+    $("soldCount").textContent = `${sold} / ${quantity}`;
+
+    $("progressBar").style.width =
+      quantity ? `${Math.min(100, sold / quantity * 100)}%` : "0%";
+
+    let ticketsSnapshot = await getDocs(
+      collection(db, "raffles", currentRaffle.id, "publicTickets")
+    );
+
+    currentPublicTickets = ticketsSnapshot.docs.map(document => ({
+      id: document.id,
+      ...document.data()
+    }));
+
+    // Liberar números cuyo tiempo ya terminó.
+    const released = await releaseExpiredTickets(
+      currentRaffle.id,
+      currentPublicTickets
+    );
+
+    // Volver a consultar si hubo liberaciones.
+    if (released) {
+      ticketsSnapshot = await getDocs(
+        collection(db, "raffles", currentRaffle.id, "publicTickets")
+      );
+
+      currentPublicTickets = ticketsSnapshot.docs.map(document => ({
+        id: document.id,
+        ...document.data()
+      }));
+    }
+
+    renderNumbers(currentPublicTickets, quantity);
+updateSelection();
+
+await restoreReservationCountdown();
+
+$("raffleStatus").textContent = "Sorteo disponible";
+    
+  } catch (error) {
+    console.error("Error al cargar el sorteo:", error);
+    $("raffleStatus").textContent = "Error de conexión";
+    $("numbersGrid").textContent =
+      "No se pudo cargar la información. Revisá tu conexión.";
+
+  } finally {
+    loadingRaffle = false;
+  }
+}
+
+// Esperar a que Firebase identifique al visitante.
+async function prepareAnonymousUser() {
+  let unsubscribe = () => {};
+
+  const user = await new Promise((resolve, reject) => {
+    unsubscribe = onAuthStateChanged(
+      auth,
+      (currentUser) => {
+        unsubscribe();
+        resolve(currentUser);
+      },
+      reject
+    );
+  });
+
+  if (!user) {
+    await signInAnonymously(auth);
+  }
+}
+
+// Mostrar el formulario.
+$("participateBtn").addEventListener("click", () => {
+  if (!selectedNumbers.length) return;
+
+  $("participantForm").hidden = false;
+  $("participantForm").scrollIntoView({
+    behavior: "smooth",
+    block: "center"
+  });
+});
+
+// Procesar reserva segura.
+$("participantForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const message = $("reservationMessage");
+  const reserveButton = $("reserveBtn");
+
+  const name = $("participantName").value.trim();
+  const phone = $("participantPhone").value.trim();
+  const numbers = [...selectedNumbers];
+
+  if (!currentRaffle || !numbers.length) {
+    message.textContent = "Primero seleccioná tus números.";
+    return;
+  }
+
+  if (name.length < 3 || phone.length < 8) {
+    message.textContent = "Revisá tu nombre y teléfono.";
+    return;
+  }
+
+  if (!auth.currentUser) {
+    message.textContent = "No se pudo identificar al participante.";
+    return;
+  }
+
+  reserveButton.disabled = true;
+  message.textContent = "Verificando disponibilidad...";
+
+  try {
+    const uid = auth.currentUser.uid;
+
+    const reservationRef = doc(collection(db, "reservations"));
+
+    const privateRefs = numbers.map(number =>
+      doc(
+        db,
+        "raffles",
+        currentRaffle.id,
+        "tickets",
+        String(number).padStart(3, "0")
+      )
+    );
+
+    const publicRefs = numbers.map(number =>
+      doc(
+        db,
+        "raffles",
+        currentRaffle.id,
+        "publicTickets",
+        String(number).padStart(3, "0")
+      )
+    );
+
+    const expiresAt = Timestamp.fromMillis(
+      Date.now() + 15 * 60 * 1000
+    );
+
+    await runTransaction(db, async (transaction) => {
+      const privateSnapshots = [];
+      const publicSnapshots = [];
+
+      for (const ref of privateRefs) {
+        privateSnapshots.push(await transaction.get(ref));
+      }
+
+      for (const ref of publicRefs) {
+        publicSnapshots.push(await transaction.get(ref));
+      }
+
+      for (let i = 0; i < numbers.length; i++) {
+        const privateSnap = privateSnapshots[i];
+        const publicSnap = publicSnapshots[i];
+
+        if (!privateSnap.exists() || !publicSnap.exists()) {
+          throw new Error("Uno de los números no existe.");
+        }
+
+        const privateTicket = privateSnap.data();
+        const publicTicket = publicSnap.data();
+
+        const expired =
+          privateTicket.status === "reserved" &&
+          privateTicket.expiresAt?.toMillis?.() <= Date.now();
+
+        const available =
+          privateTicket.status === "available" || expired;
+
+        if (!available || !isAvailable(publicTicket)) {
+          throw new Error(
+            "El número " +
+            String(numbers[i]).padStart(3, "0") +
+            " ya no está disponible."
+          );
+        }
+      }
+
+      transaction.set(reservationRef, {
+        uid,
+        raffleId: currentRaffle.id,
+        name,
+        phone,
+        numbers,
+        total: numbers.length * ticketPrice,
+        status: "pending",
+        expiresAt,
+        createdAt: serverTimestamp()
+      });
+
+      for (let i = 0; i < numbers.length; i++) {
+        transaction.update(privateRefs[i], {
+          status: "reserved",
+          paid: false,
+          participantName: name,
+          participantPhone: phone,
+          reservationId: reservationRef.id,
+          reservationUid: uid,
+          expiresAt
+        });
+
+        transaction.update(publicRefs[i], {
+          status: "reserved",
+          reservationUid: uid,
+          expiresAt
+        });
+      }
+    });
+
+    $("reservationNotice").textContent =
+      "✅ ¡Reserva solicitada correctamente! Tenés 15 minutos para completar el pago.";
+
+    $("reservationNotice").hidden = false;
+    $("reservationNotice").style.display = "block";
+    $("reservationNotice").style.color = "#00e676";
+    $("reservationNotice").style.fontWeight = "bold";
+
+    showReservationCountdown(expiresAt.toMillis());
+
+    selectedNumbers = [];
+    updateSelection();
+
+    $("participantForm").reset();
+    $("participantForm").hidden = true;
+
+    $("reservationNotice").scrollIntoView({
+      behavior: "smooth",
+      block: "center"
+    });
+
+    await loadRaffle();
+
+  } catch (error) {
+    console.error("Error al reservar:", error);
+
+    message.textContent =
+      error.message || "No se pudo completar la reserva.";
+
+    await loadRaffle();
+
+  } finally {
+    reserveButton.disabled = false;
+  }
+});
+
+updateSelection();
+
+prepareAnonymousUser()
+  .then(loadRaffle)
+  .catch(error => {
+    console.error("Error de autenticación:", error);
+    $("raffleStatus").textContent =
+      "No se pudo iniciar la sesión.";
+  });
+
+// Revisar disponibilidad cada 60 segundos mientras la página está abierta.
+setInterval(() => {
+  if (auth.currentUser && currentRaffle) {
+    loadRaffle();
+  }
+}, 60 * 1000);

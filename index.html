@@ -1,0 +1,187 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#080d19">
+  <title>ZEKA √pπ | Sorteos</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="header">
+    <div class="logo">♛ ZEKA <span>√pπ</span></div>
+    <p>SORTEOS OFICIALES</p>
+  </header>
+
+  <main class="container">
+
+    <section class="hero">
+      <span class="tag">♾️ INTERNET ILIMITADO</span>
+      <h1>¡Participá y ganá!</h1>
+      <p>Elegí tus números y participá por increíbles premios.</p>
+    </section>
+
+    <section class="raffle-card">
+      <div class="card-top">
+        <span class="status">● SORTEO ACTIVO</span>
+        <span id="raffleStatus">Cargando...</span>
+      </div>
+
+      <h2 id="raffleName">Cargando sorteo...</h2>
+
+      <div class="prizes">
+        <div>
+          <strong id="winnerCount">2</strong>
+          <span>GANADORES</span>
+        </div>
+        <div>
+          <strong id="ticketPrice">$1.000</strong>
+          <span>POR NÚMERO</span>
+        </div>
+        <div>
+          <strong id="totalNumbers">100</strong>
+          <span>NÚMEROS</span>
+        </div>
+      </div>
+
+      <div class="progress-info">
+        <span>Números vendidos</span>
+        <strong id="soldCount">0 / 100</strong>
+      </div>
+
+      <div class="progress">
+        <div id="progressBar"></div>
+      </div>
+    </section>
+
+    <section class="numbers-section">
+      <h2>🎟️ Elegí tus números</h2>
+      <p>Seleccioná los números disponibles.</p>
+
+      <div class="legend">
+        <span>🟢 Disponible</span>
+        <span>🔴 Ocupado</span>
+        <span>🔵 Seleccionado</span>
+      </div>
+
+      <div id="numbersGrid" class="numbers-grid">
+        Cargando números...
+      </div>
+    </section>
+
+    
+<section class="selection-card">
+  <h2>🎟️ Tu selección</h2>
+
+  <p id="selectedNumbers">
+    Todavía no seleccionaste números.
+  </p>
+
+  <div class="total">
+    <span>Total:</span>
+    <strong id="totalPrice">$0</strong>
+  </div>
+
+  <button id="participateBtn" disabled>
+    CONTINUAR
+  </button>
+
+  <form id="participantForm" hidden>
+    <h2>📝 Tus datos</h2>
+
+    <p>Completá tus datos para solicitar la reserva.</p>
+
+    <label for="participantName">Nombre completo</label>
+    <input
+      type="text"
+      id="participantName"
+      placeholder="Tu nombre y apellido"
+      minlength="3"
+      maxlength="80"
+      required
+    >
+
+    <label for="participantPhone">Teléfono de WhatsApp</label>
+    <input
+      type="tel"
+      id="participantPhone"
+      placeholder="Ej: 5492364123456"
+      minlength="8"
+      maxlength="20"
+      required
+    >
+
+    <button type="submit" id="reserveBtn">
+      SOLICITAR RESERVA
+    </button>
+
+    <p id="reservationMessage"></p>
+  </form>
+  <p id="reservationNotice" role="status"></p>
+
+  
+<section id="paymentPanel" class="selection-card" hidden>
+  <h2>💳 Medios de pago</h2>
+
+  <p>Elegí dónde querés realizar tu transferencia.</p>
+
+  <label for="paymentMethod">Seleccioná tu medio de pago</label>
+
+  <select id="paymentMethod" required>
+    <option value="">Seleccionar...</option>
+    <option value="mercadopago">Mercado Pago</option>
+    <option value="naranjax">Naranja X</option>
+    <option value="cuentadni">Cuenta DNI</option>
+  </select>
+
+  <div id="paymentDetails" hidden>
+    <h3 id="paymentTitle"></h3>
+
+    <p>Alias:</p>
+    <strong id="paymentAlias"></strong>
+    <button type="button" id="copyAliasBtn">
+      COPIAR ALIAS
+    </button>
+
+    <p>CBU / CVU:</p>
+    <strong id="paymentCbu"></strong>
+    <button type="button" id="copyCbuBtn">
+      COPIAR CBU / CVU
+    </button>
+
+    <div class="total">
+      <span>Total a transferir:</span>
+      <strong id="paymentTotal">$0</strong>
+    </div>
+
+    <p class="small">
+      Una vez realizada la transferencia, informá el pago.
+      La reserva queda pendiente hasta que el administrador
+      verifique el comprobante.
+    </p>
+
+    <button type="button" id="paymentDoneBtn">
+      YA REALICÉ EL PAGO
+    </button>
+
+    <p id="paymentMessage" role="status"></p>
+  </div>
+</section>
+
+  <p class="small">
+    La selección todavía no reserva tus números.
+  </p>
+</section>
+
+    <footer>
+      <strong>ZEKA √pπ</strong>
+      <p>Gracias por participar ♛</p>
+    </footer>
+
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

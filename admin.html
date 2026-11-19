@@ -1,0 +1,145 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#080d18">
+  <title>ZEKA √pπ | Administración</title>
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-icon">♛</span>
+      <div>
+        <h1>ZEKA <span>√pπ</span></h1>
+        <small>SISTEMA DE SORTEOS</small>
+      </div>
+    </div>
+    <span class="status">● ADMIN</span>
+  </header>
+
+  <main class="container">
+
+    <section class="welcome">
+      <p class="eyebrow">PANEL DE CONTROL</p>
+      <h2>Administración de sorteos</h2>
+      <p>Gestioná tus sorteos, participantes y premios.</p>
+    </section>
+
+    <section id="loginSection" class="panel">
+      <h2>Acceso administrador</h2>
+      <form id="loginForm">
+        <label>Correo electrónico</label>
+        <input id="email" type="email" required
+          placeholder="Tu correo de administrador">
+
+        <label>Contraseña</label>
+        <input id="password" type="password" required
+          placeholder="Tu contraseña">
+
+        <button type="submit" class="primary">
+          Iniciar sesión
+        </button>
+      </form>
+      <p id="loginMessage" class="message"></p>
+    </section>
+
+    <section id="dashboard" hidden>
+
+      <div class="dashboard-heading">
+        <h2>Tu administración</h2>
+        <button id="logoutBtn" class="secondary">
+          Cerrar sesión
+        </button>
+      </div>
+
+      <div class="stats">
+        <article class="stat-card">
+          <span>Sorteos</span>
+          <strong id="totalRaffles">0</strong>
+        </article>
+        <article class="stat-card">
+          <span>Participantes</span>
+          <strong id="totalParticipants">0</strong>
+        </article>
+        <article class="stat-card">
+          <span>Recaudación</span>
+          <strong id="totalRevenue">$0</strong>
+        </article>
+      </div>
+
+      <section class="panel">
+        <h2>＋ Crear nuevo sorteo</h2>
+
+        <form id="raffleForm">
+
+          <label>Nombre del sorteo</label>
+          <input id="raffleName" type="text"
+            placeholder="Ej: Gran sorteo ZEKA"
+            required>
+
+          <label>Cantidad de números</label>
+          <select id="numberCount" required>
+            <option value="100">100 números</option>
+            <option value="200" selected>200 números</option>
+            <option value="300">300 números</option>
+          </select>
+
+          <label>Precio por número (ARS)</label>
+          <input id="ticketPrice" type="number"
+            min="1" value="1000" required>
+
+          <label>Cantidad de ganadores</label>
+          <select id="winnerCount">
+            <option value="1">1 ganador</option>
+            <option value="2" selected>2 ganadores</option>
+            <option value="3">3 ganadores</option>
+          </select>
+
+          <div class="preview">
+            <span>Recaudación máxima estimada</span>
+            <strong id="estimatedRevenue">$200.000</strong>
+          </div>
+
+          <button type="submit" class="primary">
+            Crear sorteo
+          </button>
+
+        </form>
+
+        <p id="raffleMessage" class="message"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Mis sorteos</h2>
+        <div id="raffleList">
+          <p>Todavía no hay sorteos creados.</p>
+        </div>
+      </section>
+      
+<section class="panel">
+  <h2>👥 Reservas y participantes</h2>
+
+  <p>Consultá los participantes y verificá sus pagos.</p>
+
+  <div id="reservationsList">
+    <p>Seleccioná un sorteo para consultar sus reservas.</p>
+  </div>
+</section>
+
+    </section>
+
+  </main>
+
+  <footer>
+    <p>♛ ZEKA √pπ · INTERNET ILIMITADO ♾️</p>
+    <small>Sistema de administración</small>
+  </footer>
+
+  <script type="module" src="admin.js"></script>
+
+</body>
+</html>
