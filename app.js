@@ -204,6 +204,7 @@ function showPaymentPanel(reservation) {
 }
 
 
+
 function updatePaymentDetails() {
   const method = $("paymentMethod").value;
   const account = paymentAccounts[method];
@@ -211,6 +212,9 @@ function updatePaymentDetails() {
   const details = $("paymentDetails");
   const panel = $("paymentPanel");
   const title = $("paymentTitle");
+  const mpButton = $("mercadoPagoBtn");
+  const doneButton = $("paymentDoneBtn");
+
   const colors = {
     mercadopago: {
       background: "#009EE3",
@@ -231,18 +235,30 @@ function updatePaymentDetails() {
 
   if (!account) {
     details.hidden = true;
+    mpButton.hidden = true;
+    doneButton.hidden = true;
     panel.style.borderColor = "";
     panel.style.background = "";
     return;
   }
 
   const color = colors[method];
+  const isMercadoPago = method === "mercadopago";
 
   details.hidden = false;
-
   title.textContent = account.title;
-  $("paymentAlias").textContent = account.alias;
-  $("paymentCbu").textContent = account.cbu;
+
+  mpButton.hidden = !isMercadoPago;
+  doneButton.hidden = isMercadoPago;
+
+  $("paymentAlias").hidden = isMercadoPago;
+  $("paymentAlias").previousElementSibling.hidden = isMercadoPago;
+
+  $("paymentCbu").hidden = isMercadoPago;
+  $("paymentCbu").previousElementSibling.hidden = isMercadoPago;
+
+  $("copyAliasBtn").hidden = isMercadoPago;
+  $("copyCbuBtn").hidden = isMercadoPago;
 
   panel.style.border = "2px solid " + color.border;
   panel.style.background = color.background;
@@ -259,7 +275,6 @@ function updatePaymentDetails() {
   $("paymentMethod").style.color = color.text;
   $("paymentMethod").style.border = "2px solid " + color.border;
 }
-
 
 document.getElementById("paymentMethod").addEventListener("change", updatePaymentDetails);
 
@@ -282,6 +297,56 @@ document.getElementById("copyAliasBtn").addEventListener("click", () => {
 document.getElementById("copyCbuBtn").addEventListener("click", () => {
   copyPaymentText("paymentCbu");
 });
+
+
+$("mercadoPagoBtn").addEventListener("click", async () => {
+  const button = $("mercadoPagoBtn");
+  const message = $("paymentMessage");
+
+  if (!activeReservation || activeReservation.status !== "pending") {
+    message.textContent = "No hay una reserva pendiente para pagar.";
+    return;
+  }
+
+  if (!auth.currentUser) {
+    message.textContent = "No se pudo identificar al participante.";
+    return;
+  }
+
+  button.disabled = true;
+  message.textContent = "Conectando con Mercado Pago...";
+
+  try {
+    const token = await auth.currentUser.getIdToken();
+
+    const response = await fetch("/api/create-order", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + token
+      },
+      body: JSON.stringify({
+        reservationId: activeReservation.id
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || !data.success || !data.checkoutUrl) {
+      throw new Error(data.error || "No se pudo crear el pago.");
+    }
+
+    message.textContent = "Abriendo Mercado Pago...";
+    window.location.href = data.checkoutUrl;
+
+  } catch (error) {
+    console.error("Error al iniciar Mercado Pago:", error);
+    message.textContent =
+      error.message || "Error al conectar con Mercado Pago.";
+    button.disabled = false;
+  }
+});
+
 
 document.getElementById("paymentDoneBtn").addEventListener("click", async () => {
   const method = document.getElementById("paymentMethod").value;
