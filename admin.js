@@ -671,6 +671,8 @@ async function loadReservations(raffle) {
   container.textContent = "Consultando reservas...";
 
   try {
+    console.log("UID administrador:", auth.currentUser?.uid);
+console.log("UID esperado:", "GJe2WMAvJsdLtaaqfYT38fjJOVh1");
     let snapshot = await getDocs(
       collection(db, "reservations")
     );
