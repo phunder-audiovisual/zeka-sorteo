@@ -811,9 +811,13 @@ console.log("UID esperado:", "GJe2WMAvJsdLtaaqfYT38fjJOVh1");
     });
 
   } catch (error) {
-    console.error("Error cargando reservas:", error);
-    container.textContent =
-      "Error al consultar reservas: " + error.message;
+  console.error("Error cargando reservas:", error);
+
+  container.textContent =
+    "UID detectado: " + (auth.currentUser?.uid || "SIN SESIÓN") +
+    " | UID esperado: GJe2WMAvJsdLtaaqfYT38fjJOVh1" +
+    " | Código: " + (error.code || "sin código") +
+    " | Error: " + error.message
   }
 }
 
