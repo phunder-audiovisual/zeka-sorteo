@@ -811,8 +811,10 @@ $("participantForm").addEventListener("submit", async (event) => {
         raffleId: currentRaffle.id,
         name,
         phone,
-        numbers,
-        total: numbers.length * ticketPrice,
+        numbers: numbers.map(number =>
+  String(number).padStart(3, "0")
+),
+total: numbers.length * ticketPrice,
         status: "pending",
         expiresAt,
         createdAt: serverTimestamp()
