@@ -202,6 +202,8 @@ module.exports = async (req, res) => {
 
     const mpData = await mpResponse.json();
 
+    console.log("ID ORDEN MERCADO PAGO:", mpData.id);
+
     if (!mpResponse.ok || !mpData.checkout_url) {
       console.error("Error Mercado Pago:", mpData);
 
