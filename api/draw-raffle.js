@@ -262,12 +262,8 @@ module.exports = async (req, res) => {
 
     const winnerCount = getNumber(raffleFields, "winners");
 
-    if (
-      !Number.isInteger(winnerCount) ||
-      winnerCount < 1 ||
-      winnerCount > 3
-    ) {
-      throw new Error("La cantidad de ganadores no es válida.");
+    if (winnerCount !== 2) {
+  throw new Error("Este sorteo debe tener exactamente 2 ganadores.");
     }
 
     // Consultar reservas pendientes.
