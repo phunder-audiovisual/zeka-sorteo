@@ -85,9 +85,9 @@ module.exports = async (req, res) => {
       return res.status(401).json({ error: "Falta iniciar sesión." });
     }
 
-    const { auth } = await import("firebase-admin/auth");
-    const { initializeApp, getApps, applicationDefault } =
-      await import("firebase-admin/app");
+    const { getAuth } = require("firebase-admin/auth");
+const { initializeApp, getApps, applicationDefault } =
+  require("firebase-admin/app");
 
     const app = getApps().length
       ? getApps()[0]
@@ -96,8 +96,7 @@ module.exports = async (req, res) => {
           projectId: PROJECT_ID
         });
 
-    const decoded = await auth(app).verifyIdToken(idToken);
-
+    const decoded = await getAuth(app).verifyIdToken(idToken);
     if (decoded.uid !== ADMIN_UID) {
       return res.status(403).json({ error: "No autorizado." });
     }
