@@ -88,6 +88,20 @@ module.exports = async (req, res) => {
       });
     }
 
+    
+    // Impedir crear nuevas órdenes si el sorteo fue cerrado.
+    const raffle = await getFirestoreDocument(
+      `raffles/${encodeURIComponent(RAFFLE_ID)}`,
+      token
+    );
+
+    if (raffle.fields?.status?.stringValue !== "open") {
+      return res.status(409).json({
+        error: "La venta de este sorteo está cerrada."
+      });
+    }
+
+
     // Consultar la reserva usando la autenticación
     // del participante y las reglas de Firestore.
     const reservation = await getFirestoreDocument(
