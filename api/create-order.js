@@ -88,8 +88,7 @@ module.exports = async (req, res) => {
       });
     }
 
-    
-    // Impedir crear nuevas órdenes si el sorteo fue cerrado.
+    // Verificar que la venta siga abierta.
     const raffle = await getFirestoreDocument(
       `raffles/${encodeURIComponent(RAFFLE_ID)}`,
       token
@@ -101,9 +100,7 @@ module.exports = async (req, res) => {
       });
     }
 
-
-    // Consultar la reserva usando la autenticación
-    // del participante y las reglas de Firestore.
+    // Consultar la reserva.
     const reservation = await getFirestoreDocument(
       `reservations/${encodeURIComponent(reservationId)}`,
       token
@@ -113,18 +110,6 @@ module.exports = async (req, res) => {
 
     const uid = fields.uid?.stringValue;
     const raffleId = fields.raffleId?.stringValue;
-    
-    const raffle = await getFirestoreDocument(
-      `raffles/${encodeURIComponent(raffleId)}`,
-      token
-    );
-
-    if (raffle?.fields?.status?.stringValue !== "open") {
-      return res.status(409).json({
-        error: "La venta de este sorteo está cerrada."
-      });
-    }
-    
     const status = fields.status?.stringValue;
     const expiresAt = fields.expiresAt?.timestampValue;
 
@@ -158,7 +143,9 @@ module.exports = async (req, res) => {
       !uid ||
       numbers.length < 1 ||
       numbers.length > 10 ||
-      numbers.some(n => typeof n !== "string" || !/^\d{3}$/.test(n)) ||
+      numbers.some(
+        n => typeof n !== "string" || !/^\d{3}$/.test(n)
+      ) ||
       new Set(numbers).size !== numbers.length
     ) {
       return res.status(400).json({
@@ -166,8 +153,7 @@ module.exports = async (req, res) => {
       });
     }
 
-    // Comprobar que todos los tickets siguen reservados
-    // para esta misma reserva y participante.
+    // Verificar que los números pertenezcan a la reserva.
     const tickets = await Promise.all(
       numbers.map(number =>
         getFirestoreDocument(
@@ -228,8 +214,6 @@ module.exports = async (req, res) => {
 
     const mpData = await mpResponse.json();
 
-    console.log("ID ORDEN MERCADO PAGO:", mpData.id);
-
     if (!mpResponse.ok || !mpData.checkout_url) {
       console.error("Error Mercado Pago:", mpData);
 
@@ -257,3 +241,4 @@ module.exports = async (req, res) => {
     });
   }
 };
+  
