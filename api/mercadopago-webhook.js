@@ -52,7 +52,7 @@ function verifySignature(req, orderId) {
   }
 
   const manifest =
-    `id:${orderId};request-id:${requestId};ts:${ts};`;
+    `id:${orderId.toLowerCase()};request-id:${requestId};ts:${ts};`
 
   const expectedHash = crypto
     .createHmac("sha256", secret)
