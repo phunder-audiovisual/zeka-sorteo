@@ -113,6 +113,18 @@ module.exports = async (req, res) => {
 
     const uid = fields.uid?.stringValue;
     const raffleId = fields.raffleId?.stringValue;
+    
+    const raffle = await getFirestoreDocument(
+      `raffles/${encodeURIComponent(raffleId)}`,
+      token
+    );
+
+    if (raffle?.fields?.status?.stringValue !== "open") {
+      return res.status(409).json({
+        error: "La venta de este sorteo está cerrada."
+      });
+    }
+    
     const status = fields.status?.stringValue;
     const expiresAt = fields.expiresAt?.timestampValue;
 
