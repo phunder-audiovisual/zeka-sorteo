@@ -821,25 +821,23 @@ console.log("UID esperado:", "GJe2WMAvJsdLtaaqfYT38fjJOVh1");
   }
 }
 
+
 // CARGAR SORTEOS
 async function loadRaffles() {
   raffleList.textContent = "Cargando sorteos...";
 
   try {
-    const snapshot = await getDocs(
-      collection(db, "raffles")
-    );
+    const snapshot = await getDocs(collection(db, "raffles"));
 
     const raffles = snapshot.docs.map(item => ({
       id: item.id,
       ...item.data()
     }));
 
-    raffles.sort((a, b) => {
-      const dateA = a.createdAt?.toMillis?.() || 0;
-      const dateB = b.createdAt?.toMillis?.() || 0;
-      return dateB - dateA;
-    });
+    raffles.sort((a, b) =>
+      (b.createdAt?.toMillis?.() || 0) -
+      (a.createdAt?.toMillis?.() || 0)
+    );
 
     $("totalRaffles").textContent = raffles.length;
 
@@ -877,8 +875,11 @@ async function loadRaffles() {
 
       syncButton.addEventListener("click", async () => {
         syncButton.disabled = true;
-        await syncPublicTickets(raffle);
-        syncButton.disabled = false;
+        try {
+          await syncPublicTickets(raffle);
+        } finally {
+          syncButton.disabled = false;
+        }
       });
 
       const reservationsButton = document.createElement("button");
@@ -888,8 +889,11 @@ async function loadRaffles() {
 
       reservationsButton.addEventListener("click", async () => {
         reservationsButton.disabled = true;
-        await loadReservations(raffle);
-        reservationsButton.disabled = false;
+        try {
+          await loadReservations(raffle);
+        } finally {
+          reservationsButton.disabled = false;
+        }
       });
 
       card.append(
@@ -900,6 +904,75 @@ async function loadRaffles() {
         syncButton,
         reservationsButton
       );
+
+      if (
+        raffle.id === "fHG7phVJcVHScDpuzx1B" &&
+        raffle.status !== "drawn"
+      ) {
+        const drawButton = document.createElement("button");
+        drawButton.type = "button";
+        drawButton.textContent =
+          raffle.status === "open"
+            ? "Cerrar venta e iniciar sorteo"
+            : "Realizar sorteo";
+
+        drawButton.style.marginTop = "12px";
+
+        drawButton.addEventListener("click", async () => {
+          if (
+            raffle.status === "open" &&
+            !confirm("¿Querés cerrar la venta e iniciar el sorteo?")
+          ) return;
+
+          drawButton.disabled = true;
+
+          try {
+            const idToken = await auth.currentUser.getIdToken();
+
+            if (raffle.status === "open") {
+              const closeResponse = await fetch("/api/close-raffle", {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${idToken}`,
+                  "Content-Type": "application/json"
+                }
+              });
+
+              const closeData = await closeResponse.json();
+
+              if (!closeResponse.ok) {
+                throw new Error(closeData.error || "No se pudo cerrar la venta.");
+              }
+            }
+
+            const drawResponse = await fetch("/api/draw-raffle", {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${idToken}`,
+                "Content-Type": "application/json"
+              }
+            });
+
+            const drawData = await drawResponse.json();
+
+            if (!drawResponse.ok) {
+              throw new Error(drawData.error || "No se pudo realizar el sorteo.");
+            }
+
+            alert("¡Sorteo realizado correctamente!");
+            window.open("/ruleta.html", "_blank");
+
+            await loadRaffles();
+
+          } catch (error) {
+            console.error(error);
+            alert(error.message);
+            drawButton.disabled = false;
+          }
+        });
+
+        card.appendChild(drawButton);
+      }
 
       raffleList.appendChild(card);
     });
