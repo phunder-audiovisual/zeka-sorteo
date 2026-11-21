@@ -224,6 +224,10 @@ async function processReservation(
     throw new Error("No se pudo iniciar la transacción.");
   }
 
+  const raffleName =
+  `projects/${PROJECT_ID}/databases/(default)/documents/` +
+  `raffles/${RAFFLE_ID}`;
+
   const reservationName =
     `projects/${PROJECT_ID}/databases/(default)/documents/` +
     `reservations/${reservationId}`;
@@ -239,9 +243,9 @@ async function processReservation(
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          documents: [reservationName],
-          transaction
-        })
+  documents: [reservationName, raffleName],
+  transaction
+})
       }
     );
 
@@ -252,7 +256,23 @@ async function processReservation(
     }
 
     const firstResults = parseBatchGet(firstText);
-    const reservationDoc = firstResults.find(r => r.found)?.found;
+
+const reservationDoc = firstResults
+  .find(r => r.found?.name === reservationName)?.found;
+
+const raffleDoc = firstResults
+  .find(r => r.found?.name === raffleName)?.found;
+
+if (
+  !raffleDoc ||
+  getString(raffleDoc.fields, "status") !== "open"
+) {
+  await rollbackTransaction(base, accessToken, transaction);
+  return {
+    ignored: true,
+    reason: "La venta ya está cerrada."
+  };
+}
 
     if (!reservationDoc) {
       await rollbackTransaction(base, accessToken, transaction);
