@@ -86,15 +86,14 @@ module.exports = async (req, res) => {
     }
 
     const { getAuth } = require("firebase-admin/auth");
-const { initializeApp, getApps, applicationDefault } =
+const { initializeApp, getApps } =
   require("firebase-admin/app");
 
     const app = getApps().length
       ? getApps()[0]
       : initializeApp({
-          credential: applicationDefault(),
-          projectId: PROJECT_ID
-        });
+    projectId: PROJECT_ID
+  });
 
     const decoded = await getAuth(app).verifyIdToken(idToken);
     if (decoded.uid !== ADMIN_UID) {
