@@ -196,7 +196,8 @@ async function rollbackTransaction(base, token, transaction) {
 async function processReservation(
   accessToken,
   reservationId,
-  orderId
+  orderId,
+  paidAmount
 ) {
   const base =
     `https://firestore.googleapis.com/v1/projects/` +
@@ -289,6 +290,16 @@ async function processReservation(
     }
 
     const expectedTotal = numbers.length * TICKET_PRICE;
+    if (
+  Math.round(paidAmount * 100) !==
+  Math.round(expectedTotal * 100)
+) {
+  await rollbackTransaction(base, accessToken, transaction);
+  return {
+    ignored: true,
+    reason: "El importe pagado no coincide con la reserva."
+  };
+}
 
     const privateNames = numbers.map(number =>
       `${base}/raffles/${RAFFLE_ID}/tickets/${number}`
@@ -580,10 +591,11 @@ module.exports = async (req, res) => {
     const accessToken = await getGoogleAccessToken();
 
     const result = await processReservation(
-      accessToken,
-      reservationId,
-      orderId
-    );
+  accessToken,
+  reservationId,
+  orderId,
+  paidAmount
+);
 
     console.log("Resultado webhook ZEKA:", result);
 
