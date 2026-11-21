@@ -46,31 +46,22 @@ async function getGoogleAccessToken() {
   if (!client) throw new Error("Error creando cliente Google.");
 
   const result = await client.getAccessToken();
-
-  if (!result.token) {
-    throw new Error("No se obtuvo token Google.");
-  }
+  if (!result.token) throw new Error("No se obtuvo token Google.");
 
   return result.token;
 }
 
 async function verifyAdmin(req) {
-  const authHeader = req.headers.authorization || "";
-  const idToken = authHeader.startsWith("Bearer ")
-    ? authHeader.slice(7)
-    : "";
+  const header = req.headers.authorization || "";
+  const idToken = header.startsWith("Bearer ") ? header.slice(7) : "";
 
-  if (!idToken || !process.env.FIREBASE_API_KEY) {
-    return false;
-  }
+  if (!idToken || !process.env.FIREBASE_API_KEY) return false;
 
   const response = await fetch(
     `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${process.env.FIREBASE_API_KEY}`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ idToken })
     }
   );
@@ -78,7 +69,6 @@ async function verifyAdmin(req) {
   if (!response.ok) return false;
 
   const data = await response.json();
-
   return data.users?.[0]?.localId === ADMIN_UID;
 }
 
@@ -106,15 +96,11 @@ module.exports = async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
 
   if (req.method !== "POST") {
-    return res.status(405).json({
-      error: "Método no permitido."
-    });
+    return res.status(405).json({ error: "Método no permitido." });
   }
 
   try {
-    if (!PROJECT_ID) {
-      throw new Error("Falta GCP_PROJECT_ID.");
-    }
+    if (!PROJECT_ID) throw new Error("Falta GCP_PROJECT_ID.");
 
     if (!(await verifyAdmin(req))) {
       return res.status(403).json({
@@ -130,89 +116,36 @@ module.exports = async (req, res) => {
 
     const raffleUrl = `${base}/raffles/${RAFFLE_ID}`;
 
-    const raffleDoc = await firestoreRequest(
-      raffleUrl,
-      token
-    );
+    const raffle = await firestoreRequest(raffleUrl, token);
 
-    if (raffleDoc.fields?.status?.stringValue !== "open") {
+    if (raffle.fields?.status?.stringValue !== "open") {
       return res.status(409).json({
         error: "La venta ya está cerrada o el sorteo ya fue realizado."
       });
     }
 
-    // Revisar únicamente reservas que todavía están vigentes.
-    const rows = await firestoreRequest(
-      `${base}:runQuery`,
-      token,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          structuredQuery: {
-            from: [{ collectionId: "reservations" }],
-            where: {
-              fieldFilter: {
-                field: { fieldPath: "raffleId" },
-                op: "EQUAL",
-                value: { stringValue: RAFFLE_ID }
+    await firestoreRequest(`${base}:commit`, token, {
+      method: "POST",
+      body: JSON.stringify({
+        writes: [{
+          update: {
+            name: raffle.name,
+            fields: {
+              status: { stringValue: "closed" },
+              closedAt: {
+                timestampValue: new Date().toISOString()
               }
             }
+          },
+          updateMask: {
+            fieldPaths: ["status", "closedAt"]
+          },
+          currentDocument: {
+            updateTime: raffle.updateTime
           }
-        })
-      }
-    );
-
-    const now = Date.now();
-
-    const activePending = rows
-      .map(row => row.document)
-      .filter(doc => {
-        if (
-          doc?.fields?.status?.stringValue !== "pending"
-        ) {
-          return false;
-        }
-
-        const expiry =
-          doc.fields.expiresAt?.timestampValue;
-
-        return expiry && Date.parse(expiry) > now;
-      });
-
-    if (activePending.length > 0) {
-      return res.status(409).json({
-        error: "Hay reservas todavía vigentes. Esperá a que se resuelvan antes de cerrar.",
-        pending: activePending.length
-      });
-    }
-
-    // Cerrar conservando control de concurrencia.
-    await firestoreRequest(
-      `${base}:commit`,
-      token,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          writes: [{
-            update: {
-              name: raffleDoc.name,
-              fields: {
-                status: { stringValue: "closed" },
-                closedAt: {
-                  timestampValue: new Date().toISOString()
-                }
-              }
-            },
-            updateMask: {
-              fieldPaths: ["status", "closedAt"]
-            },
-            currentDocument: {
-              updateTime: raffleDoc.updateTime
-            }
-          }]
-        })
-      }
-    );
+        }]
+      })
+    });
 
     return res.status(200).json({
       success: true,
@@ -223,7 +156,7 @@ module.exports = async (req, res) => {
     console.error("Error cerrando sorteo:", error);
 
     return res.status(500).json({
-      error: error.message || "No se pudo cerrar la venta."
+      error: "No se pudo cerrar la venta."
     });
   }
 };
