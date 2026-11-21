@@ -88,41 +88,55 @@ module.exports = async (req, res) => {
       });
     }
 
-    // Verificar que la venta siga abierta.
-    const raffle = await getFirestoreDocument(
-      `raffles/${encodeURIComponent(RAFFLE_ID)}`,
-      token
-    );
+    // Consultar primero la reserva.
+const reservation = await getFirestoreDocument(
+  `reservations/${encodeURIComponent(reservationId)}`,
+  token
+);
 
-    if (raffle.fields?.status?.stringValue !== "open") {
-      return res.status(409).json({
-        error: "La venta de este sorteo está cerrada."
-      });
-    }
+const fields = reservation.fields || {};
 
-    // Consultar la reserva.
-    const reservation = await getFirestoreDocument(
-      `reservations/${encodeURIComponent(reservationId)}`,
-      token
-    );
+const uid = fields.uid?.stringValue;
+const raffleId = fields.raffleId?.stringValue;
+const status = fields.status?.stringValue;
+const expiresAt = fields.expiresAt?.timestampValue;
+const createdAt = fields.createdAt?.timestampValue;
 
-    const fields = reservation.fields || {};
+const numbers =
+  fields.numbers?.arrayValue?.values?.map(
+    item => item.stringValue
+  ) || [];
 
-    const uid = fields.uid?.stringValue;
-    const raffleId = fields.raffleId?.stringValue;
-    const status = fields.status?.stringValue;
-    const expiresAt = fields.expiresAt?.timestampValue;
+if (raffleId !== RAFFLE_ID) {
+  return res.status(400).json({
+    error: "La reserva no corresponde a este sorteo."
+  });
+}
 
-    const numbers =
-      fields.numbers?.arrayValue?.values?.map(
-        item => item.stringValue
-      ) || [];
+// Verificar el estado de la venta.
+const raffle = await getFirestoreDocument(
+  `raffles/${encodeURIComponent(RAFFLE_ID)}`,
+  token
+);
 
-    if (raffleId !== RAFFLE_ID) {
-      return res.status(400).json({
-        error: "La reserva no corresponde a este sorteo."
-      });
-    }
+const raffleStatus = raffle.fields?.status?.stringValue;
+const closedAt = raffle.fields?.closedAt?.timestampValue;
+
+if (raffleStatus === "closed") {
+  if (
+    !createdAt ||
+    !closedAt ||
+    Date.parse(createdAt) >= Date.parse(closedAt)
+  ) {
+    return res.status(409).json({
+      error: "La reserva no fue realizada antes del cierre."
+    });
+  }
+} else if (raffleStatus !== "open") {
+  return res.status(409).json({
+    error: "El sorteo ya fue realizado."
+  });
+}
 
     if (status !== "pending") {
       return res.status(400).json({
