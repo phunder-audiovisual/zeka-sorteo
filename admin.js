@@ -149,60 +149,56 @@ async function loadRaffles() {
         drawButton.style.marginTop = "12px";
 
         drawButton.addEventListener("click", async () => {
-          if (
-            raffle.status === "open" &&
-            !confirm("¿Querés cerrar la venta e iniciar el sorteo?")
-          ) return;
+  if (
+    raffle.status === "open" &&
+    !confirm("¿Querés cerrar la venta? Los pagos de reservas anteriores podrán completarse.")
+  ) return;
 
-          drawButton.disabled = true;
+  if (
+    raffle.status === "closed" &&
+    !confirm("¿Querés realizar el sorteo ahora? Se elegirán los 2 ganadores entre los números pagados.")
+  ) return;
 
-          try {
-            const idToken = await auth.currentUser.getIdToken();
+  drawButton.disabled = true;
 
-            async function callApi(url) {
-              const response = await fetch(url, {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${idToken}`,
-                  "Content-Type": "application/json"
-                }
-              });
+  try {
+    const idToken = await auth.currentUser.getIdToken();
 
-              const text = await response.text();
+    const endpoint = raffle.status === "open"
+      ? "/api/close-raffle"
+      : "/api/draw-raffle";
 
-              let data;
-              try {
-                data = JSON.parse(text);
-              } catch {
-                throw new Error(
-                  `Error del servidor (${response.status}): ${text.slice(0, 200)}`
-                );
-              }
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+        "Content-Type": "application/json"
+      }
+    });
 
-              if (!response.ok) {
-                throw new Error(data.error || "Error en el servidor.");
-              }
+    const data = await response.json();
 
-              return data;
-            }
+    if (!response.ok) {
+      throw new Error(data.error || "No se pudo completar la operación.");
+    }
 
-            if (raffle.status === "open") {
-              await callApi("/api/close-raffle");
-            }
+    if (raffle.status === "open") {
+      alert("Venta cerrada. Las reservas anteriores podrán completar sus pagos. Cuando se resuelvan, podrás realizar el sorteo.");
+      await loadRaffles();
+      return;
+    }
 
-            await callApi("/api/draw-raffle");
+    alert("¡Sorteo realizado correctamente!");
+    window.open("/ruleta.html", "_blank");
+    await loadRaffles();
 
-            alert("¡Sorteo realizado correctamente!");
-            window.open("/ruleta.html", "_blank");
-            await loadRaffles();
-
-          } catch (error) {
-            console.error(error);
-            alert(error.message);
-            drawButton.disabled = false;
-          }
-        });
-
+  } catch (error) {
+    alert(error.message);
+    await loadRaffles();
+  } finally {
+    drawButton.disabled = false;
+  }
+});
         card.appendChild(drawButton);
       }
 
