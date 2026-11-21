@@ -1,40 +1,202 @@
 
-const { getVercelOidcToken } = require("@vercel/oidc");
-const { GoogleAuth } = require("google-auth-library");
-
-const PROJECT_ID = "zeka-sorteo";
+const PROJECT_ID = process.env.GCP_PROJECT_ID;
 const RAFFLE_ID = "fHG7phVJcVHScDpuzx1B";
+const ADMIN_UID = "GJe2WMAvJsdLtaaqfYT38fjJOVh1";
+
+async function getGoogleAccessToken() {
+  const {
+    GCP_PROJECT_NUMBER,
+    GCP_SERVICE_ACCOUNT_EMAIL,
+    GCP_WORKLOAD_IDENTITY_POOL_ID,
+    GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID
+  } = process.env;
+
+  if (!PROJECT_ID || !GCP_PROJECT_NUMBER ||
+      !GCP_SERVICE_ACCOUNT_EMAIL ||
+      !GCP_WORKLOAD_IDENTITY_POOL_ID ||
+      !GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID) {
+    throw new Error("Faltan variables de Google Cloud.");
+  }
+
+  const { getVercelOidcToken } = await import("@vercel/oidc");
+  const { ExternalAccountClient } = require("google-auth-library");
+
+  const audience =
+    `//iam.googleapis.com/projects/${GCP_PROJECT_NUMBER}` +
+    `/locations/global/workloadIdentityPools/` +
+    `${GCP_WORKLOAD_IDENTITY_POOL_ID}/providers/` +
+    `${GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID}`;
+
+  const client = ExternalAccountClient.fromJSON({
+    type: "external_account",
+    audience,
+    subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+    token_url: "https://sts.googleapis.com/v1/token",
+    service_account_impersonation_url:
+      `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/` +
+      `${GCP_SERVICE_ACCOUNT_EMAIL}:generateAccessToken`,
+    subject_token_supplier: {
+      getSubjectToken: async () => await getVercelOidcToken()
+    }
+  });
+
+  if (!client) throw new Error("Error creando cliente Google.");
+
+  const result = await client.getAccessToken();
+  if (!result.token) throw new Error("No se obtuvo token Google.");
+
+  return result.token;
+}
+
+async function firestoreRequest(url, token, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    console.error("Firestore:", text);
+    throw new Error("Error consultando Firestore.");
+  }
+
+  return text ? JSON.parse(text) : {};
+}
 
 module.exports = async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Método no permitido." });
   }
 
   try {
-    const idToken = await getVercelOidcToken();
+    const authHeader = req.headers.authorization || "";
+    const idToken = authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : "";
 
-    const auth = new GoogleAuth({
-      scopes: ["https://www.googleapis.com/auth/datastore"],
-      credentials: {
-        type: "external_account",
-        audience: process.env.GCP_WORKLOAD_IDENTITY_AUDIENCE,
-        subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
-        token_url: "https://sts.googleapis.com/v1/token",
-        credential_source: {
-          environment_id: "aws1",
-          region_url: "http://169.254.169.254/latest/meta-data/placement/availability-zone",
-          url: "http://169.254.169.254/latest/meta-data/iam/security-credentials",
-          regional_cred_verification_url: "http://169.254.169.254/latest/meta-data/iam/security-credentials"
-        }
-      }
+    if (!idToken) {
+      return res.status(401).json({ error: "Falta iniciar sesión." });
+    }
+
+    const { auth } = await import("firebase-admin/auth");
+    const { initializeApp, getApps, applicationDefault } =
+      await import("firebase-admin/app");
+
+    const app = getApps().length
+      ? getApps()[0]
+      : initializeApp({
+          credential: applicationDefault(),
+          projectId: PROJECT_ID
+        });
+
+    const decoded = await auth(app).verifyIdToken(idToken);
+
+    if (decoded.uid !== ADMIN_UID) {
+      return res.status(403).json({ error: "No autorizado." });
+    }
+
+    const token = await getGoogleAccessToken();
+
+    const base =
+      `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}` +
+      `/databases/(default)/documents`;
+
+    const raffleUrl = `${base}/raffles/${RAFFLE_ID}`;
+
+    const raffle = await fetch(raffleUrl, {
+      headers: { Authorization: `Bearer ${token}` }
     });
 
-    return res.status(501).json({
-      error: "Falta conectar la autenticación OIDC de Vercel."
+    if (!raffle.ok) {
+      throw new Error("No se pudo consultar el sorteo.");
+    }
+
+    const raffleDoc = await raffle.json();
+
+    if (raffleDoc.fields?.status?.stringValue !== "open") {
+      return res.status(409).json({ error: "El sorteo ya no está abierto." });
+    }
+
+    const reservations = await fetch(
+      `${base}:runQuery`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          structuredQuery: {
+            from: [{ collectionId: "reservations" }],
+            where: {
+              fieldFilter: {
+                field: { fieldPath: "raffleId" },
+                op: "EQUAL",
+                value: { stringValue: RAFFLE_ID }
+              }
+            }
+          }
+        })
+      }
+    );
+
+    if (!reservations.ok) {
+      throw new Error("No se pudieron consultar las reservas.");
+    }
+
+    const rows = await reservations.json();
+
+    const pending = rows
+      .map(row => row.document)
+      .filter(doc =>
+        doc?.fields?.status?.stringValue === "pending"
+      );
+
+    if (pending.length) {
+      return res.status(409).json({
+        error: "Hay pagos o reservas pendientes. Resolvelos antes de cerrar.",
+        pending: pending.length
+      });
+    }
+
+    const closeResponse = await firestoreRequest(
+      `${base}:commit`,
+      token,
+      {
+        writes: [{
+          update: {
+            name: raffleDoc.name,
+            fields: {
+              status: { stringValue: "closed" },
+              closedAt: { timestampValue: new Date().toISOString() }
+            }
+          },
+          updateMask: {
+            fieldPaths: ["status", "closedAt"]
+          },
+          currentDocument: {
+            updateTime: raffleDoc.updateTime
+          }
+        }]
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Venta cerrada correctamente."
     });
 
   } catch (error) {
-    console.error("Error cerrando venta:", error);
-    return res.status(500).json({ error: "No se pudo cerrar la venta." });
+    console.error("Error cerrando sorteo:", error);
+    return res.status(500).json({
+      error: "No se pudo cerrar la venta."
+    });
   }
 };
