@@ -263,14 +263,11 @@ const reservationDoc = firstResults
 const raffleDoc = firstResults
   .find(r => r.found?.name === raffleName)?.found;
 
-if (
-  !raffleDoc ||
-  getString(raffleDoc.fields, "status") !== "open"
-) {
+if (!raffleDoc) {
   await rollbackTransaction(base, accessToken, transaction);
   return {
     ignored: true,
-    reason: "La venta ya está cerrada."
+    reason: "Sorteo inexistente."
   };
 }
 
@@ -280,6 +277,37 @@ if (
     }
 
     const reservationFields = reservationDoc.fields || {};
+
+    const raffleStatus = getString(raffleDoc.fields, "status");
+
+const raffleClosedAt =
+  raffleDoc.fields?.closedAt?.timestampValue;
+
+const reservationCreatedAt =
+  reservationFields.createdAt?.timestampValue;
+
+if (raffleStatus !== "open" && raffleStatus !== "closed") {
+  await rollbackTransaction(base, accessToken, transaction);
+  return {
+    ignored: true,
+    reason: "El sorteo ya fue realizado."
+  };
+}
+
+if (
+  raffleStatus === "closed" &&
+  (
+    !raffleClosedAt ||
+    !reservationCreatedAt ||
+    Date.parse(reservationCreatedAt) >= Date.parse(raffleClosedAt)
+  )
+) {
+  await rollbackTransaction(base, accessToken, transaction);
+  return {
+    ignored: true,
+    reason: "La reserva fue creada después del cierre."
+  };
+}
 
     if (getString(reservationFields, "status") === "paid") {
       await rollbackTransaction(base, accessToken, transaction);
