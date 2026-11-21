@@ -896,6 +896,66 @@ async function loadRaffles() {
         }
       });
 
+      if (raffle.id === "fHG7phVJcVHScDpuzx1B" && raffle.status !== "drawn") {
+  const drawButton = document.createElement("button");
+
+  drawButton.textContent =
+    raffle.status === "open"
+      ? "Cerrar venta e iniciar sorteo"
+      : "Realizar sorteo";
+
+  drawButton.addEventListener("click", async () => {
+    if (
+      raffle.status === "open" &&
+      !confirm("¿Cerrar la venta e iniciar el sorteo?")
+    ) return;
+
+    drawButton.disabled = true;
+
+    try {
+      const idToken = await auth.currentUser.getIdToken();
+
+      if (raffle.status === "open") {
+        const closeResponse = await fetch("/api/close-raffle", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${idToken}`
+          }
+        });
+
+        const closeData = await closeResponse.json();
+
+        if (!closeResponse.ok) {
+          throw new Error(closeData.error || "No se pudo cerrar la venta.");
+        }
+      }
+
+      const drawResponse = await fetch("/api/draw-raffle", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${idToken}`
+        }
+      });
+
+      const drawData = await drawResponse.json();
+
+      if (!drawResponse.ok) {
+        throw new Error(drawData.error || "No se pudo realizar el sorteo.");
+      }
+
+      alert("¡Sorteo realizado correctamente!");
+      window.open("/ruleta.html", "_blank");
+      await loadRaffles();
+
+    } catch (error) {
+      alert(error.message);
+      drawButton.disabled = false;
+    }
+  });
+
+  card.appendChild(drawButton);
+  }
+
       card.append(
         title,
         info,
