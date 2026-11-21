@@ -23,13 +23,19 @@ function getNumber(fields, name) {
   );
 }
 
+
 function verifySignature(req, orderId) {
   const secret = process.env.MP_WEBHOOK_SECRET;
-
   const signature = req.headers["x-signature"];
   const requestId = req.headers["x-request-id"];
 
   if (!secret || !signature || !requestId) {
+    console.error("MP firma: faltan datos", {
+      secretConfigured: Boolean(secret),
+      signatureReceived: Boolean(signature),
+      requestIdReceived: Boolean(requestId),
+      orderIdReceived: Boolean(orderId)
+    });
     return false;
   }
 
@@ -43,16 +49,13 @@ function verifySignature(req, orderId) {
   const ts = parts.ts;
   const receivedHash = parts.v1;
 
-  if (
-    !ts ||
-    !receivedHash ||
-    !/^[a-f0-9]{64}$/i.test(receivedHash)
-  ) {
+  if (!ts || !/^[a-f0-9]{64}$/i.test(receivedHash || "")) {
+    console.error("MP firma: formato inválido");
     return false;
   }
 
   const manifest =
-    `id:${orderId};request-id:${requestId};ts:${ts};`
+    `id:${orderId};request-id:${requestId};ts:${ts};`;
 
   const expectedHash = crypto
     .createHmac("sha256", secret)
@@ -62,10 +65,19 @@ function verifySignature(req, orderId) {
   const received = Buffer.from(receivedHash, "hex");
   const expected = Buffer.from(expectedHash, "hex");
 
-  return (
+  const valid =
     received.length === expected.length &&
-    crypto.timingSafeEqual(received, expected)
-  );
+    crypto.timingSafeEqual(received, expected);
+
+  if (!valid) {
+    console.error("MP firma: hash no coincide", {
+      orderId,
+      requestIdReceived: true,
+      timestampReceived: true
+    });
+  }
+
+  return valid;
 }
 
 async function getGoogleAccessToken() {
