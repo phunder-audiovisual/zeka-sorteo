@@ -439,3 +439,37 @@ footer strong {
   font-weight: bold;
   text-align: center;
 }
+
+/* BOTÓN PAGAR CON MERCADO PAGO */
+#mercadoPagoBtn:not([hidden]) {
+  display: block;
+  width: 100%;
+  min-height: 54px;
+  margin-top: 18px;
+  padding: 16px 20px;
+  border: 2px solid #003F8F;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #009EE3, #0077C8);
+  color: #FFFFFF;
+  font-family: Arial, sans-serif;
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: 0.4px;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 5px 14px rgba(0, 63, 143, 0.35);
+  transition: transform 0.2s, filter 0.2s;
+}
+
+#mercadoPagoBtn:not([hidden]):hover {
+  filter: brightness(1.08);
+}
+
+#mercadoPagoBtn:not([hidden]):active {
+  transform: scale(0.98);
+}
+
+#mercadoPagoBtn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
