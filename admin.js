@@ -1,3 +1,70 @@
+import { auth, db } from "./firebase.js";
+
+import {
+  signInWithEmailAndPassword,
+  onAuthStateChanged,
+  signOut
+} from "https://www.gstatic.com/firebasejs/13.4.0/firebase-auth.js";
+
+import {
+  collection,
+  getDocs
+} from "https://www.gstatic.com/firebasejs/13.4.0/firebase-firestore.js";
+
+const ADMIN_UID = "GJe2WMAvJsdLtaaqfYT38fjJOVh1";
+
+const $ = id => document.getElementById(id);
+
+const loginForm = $("loginForm");
+const loginSection = $("loginSection");
+const dashboard = $("dashboard");
+const loginMessage = $("loginMessage");
+const raffleList = $("raffleList");
+
+function money(value) {
+  return Number(value || 0).toLocaleString("es-AR", {
+    style: "currency",
+    currency: "ARS",
+    maximumFractionDigits: 0
+  });
+}
+
+loginForm.addEventListener("submit", async event => {
+  event.preventDefault();
+
+  loginMessage.textContent = "Ingresando...";
+
+  try {
+    await signInWithEmailAndPassword(
+      auth,
+      $("email").value.trim(),
+      $("password").value
+    );
+  } catch (error) {
+    loginMessage.textContent = "Error: " + error.message;
+  }
+});
+
+onAuthStateChanged(auth, async user => {
+  if (user && user.uid === ADMIN_UID) {
+    loginSection.hidden = true;
+    dashboard.hidden = false;
+    loginMessage.textContent = "";
+    await loadRaffles();
+    return;
+  }
+
+  dashboard.hidden = true;
+  loginSection.hidden = false;
+
+  if (user) {
+    loginMessage.textContent = "Esta cuenta no tiene permisos de administrador.";
+    await signOut(auth);
+  }
+});
+
+$("logoutBtn").addEventListener("click", () => signOut(auth));
+
 // CARGAR SORTEOS
 async function loadRaffles() {
   raffleList.textContent = "Cargando sorteos...";
