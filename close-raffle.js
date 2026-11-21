@@ -85,20 +85,26 @@ module.exports = async (req, res) => {
       return res.status(401).json({ error: "Falta iniciar sesión." });
     }
 
-    const { getAuth } = require("firebase-admin/auth");
-const { initializeApp, getApps } =
-  require("firebase-admin/app");
+    const response = await fetch(
+  `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${process.env.FIREBASE_API_KEY}`,
+  {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ idToken })
+  }
+);
 
-    const app = getApps().length
-      ? getApps()[0]
-      : initializeApp({
-    projectId: PROJECT_ID
-  });
+if (!response.ok) {
+  return res.status(401).json({ error: "Sesión inválida." });
+}
 
-    const decoded = await getAuth(app).verifyIdToken(idToken);
-    if (decoded.uid !== ADMIN_UID) {
-      return res.status(403).json({ error: "No autorizado." });
-    }
+const data = await response.json();
+
+if (data.users?.[0]?.localId !== ADMIN_UID) {
+  return res.status(403).json({ error: "No autorizado." });
+}
 
     const token = await getGoogleAccessToken();
 
