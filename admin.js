@@ -411,6 +411,45 @@ async function runRaffleAction(raffle, button) {
   }
 }
 
+async function deleteRaffle(raffle, button) {
+  const label = raffle.name || "Sorteo sin nombre";
+
+  if (
+    !confirm(
+      `¿Eliminar el sorteo «${label}»?\n\n` +
+      "Se borran sus números, participantes y reservas. " +
+      "No se puede deshacer."
+    )
+  ) {
+    return;
+  }
+
+  const typed = prompt("Para confirmar, escribí ELIMINAR (en mayúsculas):");
+
+  if (typed === null) return;
+
+  if (typed.trim() !== "ELIMINAR") {
+    alert("No se eliminó nada: la palabra no coincide.");
+    return;
+  }
+
+  button.disabled = true;
+
+  try {
+    const result = await callApi(
+      "/api/delete-raffle",
+      { raffleId: raffle.id, confirm: "ELIMINAR" }
+    );
+
+    alert(result.message || "Sorteo eliminado.");
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    button.disabled = false;
+    await loadRaffles();
+  }
+}
+
 async function loadRaffles() {
   raffleList.textContent = "Cargando sorteos...";
 
@@ -518,6 +557,18 @@ async function loadRaffles() {
 
         card.append(winners, link);
       }
+
+      const deleteButton = createButton(
+        "Eliminar sorteo",
+        () => deleteRaffle(raffle, deleteButton)
+      );
+
+      deleteButton.style.display = "block";
+      deleteButton.style.marginTop = "16px";
+      deleteButton.style.background = "#7f1d1d";
+      deleteButton.style.color = "#fff";
+
+      card.appendChild(deleteButton);
 
       raffleList.appendChild(card);
     });
