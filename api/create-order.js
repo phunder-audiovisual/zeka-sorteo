@@ -1,28 +1,19 @@
+"use strict";
 
 const crypto = require("crypto");
 
-const PROJECT_ID = "zeka-sorteo";
-const RAFFLE_ID = "fHG7phVJcVHScDpuzx1B";
-const TICKET_PRICE = 1000;
+const {
+  HttpError,
+  readBearerToken,
+  lookupUser,
+  getGoogleAccessToken
+} = require("../lib/google");
 
-async function getFirestoreDocument(path, token) {
-  const url =
-    `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/${path}`;
+const { loadHeldReservation, extendHold } = require("../lib/payments");
 
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`
-    }
-  });
-
-  if (!response.ok) {
-    const error = new Error("No se pudo verificar la reserva.");
-    error.status = response.status;
-    throw error;
-  }
-
-  return response.json();
-}
+// Al pasar a Mercado Pago, la reserva se alarga una sola vez para que el
+// cliente tenga tiempo de pagar sin que le liberen los números.
+const CHECKOUT_HOLD_MINUTES = 20;
 
 function stableIdempotencyKey(reservationId) {
   const hash = crypto
@@ -33,9 +24,7 @@ function stableIdempotencyKey(reservationId) {
     .split("");
 
   hash[12] = "4";
-  hash[16] = (
-    (parseInt(hash[16], 16) & 3) | 8
-  ).toString(16);
+  hash[16] = ((parseInt(hash[16], 16) & 3) | 8).toString(16);
 
   const value = hash.join("");
 
@@ -52,21 +41,14 @@ module.exports = async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
 
   if (req.method !== "POST") {
-    return res.status(405).json({
-      error: "Método no permitido."
-    });
+    return res.status(405).json({ error: "Método no permitido." });
   }
 
   try {
-    const token = req.headers.authorization?.replace(
-      /^Bearer\s+/i,
-      ""
-    );
+    const idToken = readBearerToken(req);
 
-    if (!token) {
-      return res.status(401).json({
-        error: "Tenés que iniciar sesión."
-      });
+    if (!idToken) {
+      return res.status(401).json({ error: "Tenés que iniciar sesión." });
     }
 
     const reservationId = req.body?.reservationId;
@@ -80,121 +62,30 @@ module.exports = async (req, res) => {
       });
     }
 
-    const accessToken = process.env.MP_ACCESS_TOKEN;
+    const mpToken = process.env.MP_ACCESS_TOKEN;
 
-    if (!accessToken) {
+    if (!mpToken) {
       return res.status(500).json({
         error: "Falta configurar Mercado Pago."
       });
     }
 
-    // Consultar primero la reserva.
-const reservation = await getFirestoreDocument(
-  `reservations/${encodeURIComponent(reservationId)}`,
-  token
-);
+    const uid = await lookupUser(idToken);
 
-const fields = reservation.fields || {};
+    if (!uid) {
+      return res.status(401).json({ error: "Tenés que iniciar sesión." });
+    }
 
-const uid = fields.uid?.stringValue;
-const raffleId = fields.raffleId?.stringValue;
-const status = fields.status?.stringValue;
-const expiresAt = fields.expiresAt?.timestampValue;
-const createdAt = fields.createdAt?.timestampValue;
+    const googleToken = await getGoogleAccessToken();
 
-const numbers =
-  fields.numbers?.arrayValue?.values?.map(
-    item => item.stringValue
-  ) || [];
-
-if (raffleId !== RAFFLE_ID) {
-  return res.status(400).json({
-    error: "La reserva no corresponde a este sorteo."
-  });
-}
-
-// Verificar el estado de la venta.
-const raffle = await getFirestoreDocument(
-  `raffles/${encodeURIComponent(RAFFLE_ID)}`,
-  token
-);
-
-const raffleStatus = raffle.fields?.status?.stringValue;
-const closedAt = raffle.fields?.closedAt?.timestampValue;
-
-if (raffleStatus === "closed") {
-  if (
-    !createdAt ||
-    !closedAt ||
-    Date.parse(createdAt) >= Date.parse(closedAt)
-  ) {
-    return res.status(409).json({
-      error: "La reserva no fue realizada antes del cierre."
+    // Verifica dueño, vencimiento, sorteo, precio y números de la reserva.
+    const held = await loadHeldReservation(googleToken, reservationId, {
+      expectedUid: uid,
+      allowExpired: false
     });
-  }
-} else if (raffleStatus !== "open") {
-  return res.status(409).json({
-    error: "El sorteo ya fue realizado."
-  });
-}
 
-    if (status !== "pending") {
-      return res.status(400).json({
-        error: "La reserva no está pendiente."
-      });
-    }
-
-    if (
-      !expiresAt ||
-      Date.parse(expiresAt) <= Date.now()
-    ) {
-      return res.status(400).json({
-        error: "La reserva venció. Volvé a seleccionar tus números."
-      });
-    }
-
-    if (
-      !uid ||
-      numbers.length < 1 ||
-      numbers.length > 10 ||
-      numbers.some(
-        n => typeof n !== "string" || !/^\d{3}$/.test(n)
-      ) ||
-      new Set(numbers).size !== numbers.length
-    ) {
-      return res.status(400).json({
-        error: "Los números de la reserva no son válidos."
-      });
-    }
-
-    // Verificar que los números pertenezcan a la reserva.
-    const tickets = await Promise.all(
-      numbers.map(number =>
-        getFirestoreDocument(
-          `raffles/${RAFFLE_ID}/tickets/${number}`,
-          token
-        )
-      )
-    );
-
-    for (const ticket of tickets) {
-      const data = ticket.fields || {};
-
-      if (
-        data.status?.stringValue !== "reserved" ||
-        data.reservationId?.stringValue !== reservationId ||
-        data.reservationUid?.stringValue !== uid ||
-        !data.expiresAt?.timestampValue ||
-        Date.parse(data.expiresAt.timestampValue) <= Date.now()
-      ) {
-        return res.status(400).json({
-          error: "Uno de los números ya no pertenece a esta reserva."
-        });
-      }
-    }
-
-    // Calcular el precio en el servidor.
-    const total = numbers.length * TICKET_PRICE;
+    const count = held.reservation.numbers.length;
+    const total = held.reservation.total; // ya validado: cantidad × precio
 
     const order = {
       type: "online",
@@ -206,25 +97,21 @@ if (raffleStatus === "closed") {
       items: [
         {
           title: "Número de ZEKA-SORTEO",
-          quantity: numbers.length,
-          unit_price: TICKET_PRICE.toFixed(2)
+          quantity: count,
+          unit_price: held.price.toFixed(2)
         }
       ]
     };
 
-    const mpResponse = await fetch(
-      "https://api.mercadopago.com/v1/orders",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-          "X-Idempotency-Key":
-            stableIdempotencyKey(reservationId)
-        },
-        body: JSON.stringify(order)
-      }
-    );
+    const mpResponse = await fetch("https://api.mercadopago.com/v1/orders", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${mpToken}`,
+        "Content-Type": "application/json",
+        "X-Idempotency-Key": stableIdempotencyKey(reservationId)
+      },
+      body: JSON.stringify(order)
+    });
 
     const mpData = await mpResponse.json();
 
@@ -236,23 +123,36 @@ if (raffleStatus === "closed") {
       });
     }
 
+    // Alarga la reserva una sola vez. Si falla no se corta el pago: el
+    // webhook acepta pagos que lleguen después del vencimiento.
+    if (!held.reservation.checkoutStarted) {
+      try {
+        const now = new Date();
+        const expiresAt = new Date(
+          now.getTime() + CHECKOUT_HOLD_MINUTES * 60 * 1000
+        ).toISOString();
+
+        await extendHold(googleToken, held, expiresAt, {
+          checkoutStartedAt: { timestampValue: now.toISOString() }
+        });
+      } catch (error) {
+        console.error("No se pudo alargar la reserva:", error);
+      }
+    }
+
     return res.status(200).json({
       success: true,
       orderId: mpData.id,
       checkoutUrl: mpData.checkout_url,
       total
     });
-
   } catch (error) {
     console.error("Error create-order:", error);
 
-    return res.status(
-      error.status === 403 ? 403 : 500
-    ).json({
-      error: error.status === 403
-        ? "No tenés permiso para consultar esta reserva."
-        : "No se pudo preparar el pago."
-    });
+    if (error instanceof HttpError && !error.internal) {
+      return res.status(error.status).json({ error: error.message });
+    }
+
+    return res.status(500).json({ error: "No se pudo preparar el pago." });
   }
 };
-  

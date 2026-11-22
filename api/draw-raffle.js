@@ -1,174 +1,51 @@
+"use strict";
 
 const crypto = require("crypto");
 
-const PROJECT_ID = process.env.GCP_PROJECT_ID;
-const RAFFLE_ID = "fHG7phVJcVHScDpuzx1B";
-const ADMIN_UID = "GJe2WMAvJsdLtaaqfYT38fjJOVh1";
+const {
+  DOCS,
+  ROOT,
+  ID_PATTERN,
+  getString,
+  getNumber,
+  getTimestamp,
+  verifyAdmin,
+  getGoogleAccessToken,
+  firestoreRequest
+} = require("../lib/google");
 
-const ROOT =
-  `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
+// Realiza el sorteo (solo administrador). Elige al azar, en el servidor,
+// entre los números pagados con participante registrado.
 
-function send(res, status, data) {
-  return res.status(status).json(data);
-}
+class DrawError extends Error {}
 
-function getString(fields, name) {
-  return fields?.[name]?.stringValue || "";
-}
-
-function getNumber(fields, name) {
-  const value = fields?.[name];
-  return Number(value?.integerValue ?? value?.doubleValue ?? 0);
-}
-
-function getTimestamp(fields, name) {
-  return fields?.[name]?.timestampValue || null;
-}
-
-async function getGoogleAccessToken() {
-  const {
-    GCP_PROJECT_NUMBER,
-    GCP_SERVICE_ACCOUNT_EMAIL,
-    GCP_WORKLOAD_IDENTITY_POOL_ID,
-    GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID
-  } = process.env;
-
-  if (
-    !PROJECT_ID ||
-    !GCP_PROJECT_NUMBER ||
-    !GCP_SERVICE_ACCOUNT_EMAIL ||
-    !GCP_WORKLOAD_IDENTITY_POOL_ID ||
-    !GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID
-  ) {
-    throw new Error("Faltan variables de Google Cloud.");
-  }
-
-  const { getVercelOidcToken } = await import("@vercel/oidc");
-  const { ExternalAccountClient } = require("google-auth-library");
-
-  const audience =
-    `//iam.googleapis.com/projects/${GCP_PROJECT_NUMBER}` +
-    `/locations/global/workloadIdentityPools/` +
-    `${GCP_WORKLOAD_IDENTITY_POOL_ID}/providers/` +
-    `${GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID}`;
-
-  const client = ExternalAccountClient.fromJSON({
-    type: "external_account",
-    audience,
-    subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
-    token_url: "https://sts.googleapis.com/v1/token",
-    service_account_impersonation_url:
-      `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/` +
-      `${GCP_SERVICE_ACCOUNT_EMAIL}:generateAccessToken`,
-    subject_token_supplier: {
-      getSubjectToken: async () => await getVercelOidcToken()
-    }
-  });
-
-  if (!client) {
-    throw new Error("No se pudo crear el cliente de Google.");
-  }
-
-  const result = await client.getAccessToken();
-
-  if (!result.token) {
-    throw new Error("Google no devolvió un token.");
-  }
-
-  return result.token;
-}
-
-async function verifyAdmin(req) {
-  const authorization = req.headers.authorization || "";
-  const idToken = authorization.startsWith("Bearer ")
-    ? authorization.slice(7)
-    : "";
-
-  if (!idToken) {
-    return { valid: false, status: 401 };
-  }
-
-  if (!process.env.FIREBASE_API_KEY) {
-    throw new Error("Falta FIREBASE_API_KEY.");
-  }
-
-  const response = await fetch(
-    `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${process.env.FIREBASE_API_KEY}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
+async function runQuery(parentUrl, collectionId, filters, token, transaction) {
+  const result = await firestoreRequest(`${parentUrl}:runQuery`, token, {
+    method: "POST",
+    body: JSON.stringify({
+      structuredQuery: {
+        from: [{ collectionId }],
+        where: {
+          compositeFilter: { op: "AND", filters }
+        }
       },
-      body: JSON.stringify({ idToken })
-    }
-  );
-
-  if (!response.ok) {
-    return { valid: false, status: 401 };
-  }
-
-  const data = await response.json();
-
-  if (data.users?.[0]?.localId !== ADMIN_UID) {
-    return { valid: false, status: 403 };
-  }
-
-  return { valid: true };
-}
-
-async function firestoreRequest(url, token, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    }
+      transaction
+    })
   });
 
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    console.error("Firestore:", data);
-    throw new Error(
-      data.error?.message || "Error consultando Firestore."
-    );
-  }
-
-  return data;
-}
-
-async function runQuery(
-  parent,
-  collectionId,
-  filters,
-  token,
-  transaction
-) {
-  const result = await firestoreRequest(
-    `${ROOT}:runQuery`,
-    token,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        parent,
-        structuredQuery: {
-          from: [{ collectionId }],
-          where: {
-            compositeFilter: {
-              op: "AND",
-              filters
-            }
-          }
-        },
-        transaction
-      })
-    }
-  );
-
-  return result
+  return (Array.isArray(result) ? result : [result])
     .filter(item => item.document)
     .map(item => item.document);
+}
+
+function equalFilter(fieldPath, value) {
+  return {
+    fieldFilter: {
+      field: { fieldPath },
+      op: "EQUAL",
+      value
+    }
+  };
 }
 
 function randomWinners(tickets, count) {
@@ -187,51 +64,37 @@ module.exports = async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
 
   if (req.method !== "POST") {
-    return send(res, 405, {
-      error: "Método no permitido."
-    });
+    return res.status(405).json({ error: "Método no permitido." });
   }
 
-  if (!PROJECT_ID) {
-    return send(res, 500, {
-      error: "Falta GCP_PROJECT_ID en Vercel."
-    });
-  }
-
-  let transaction;
+  let token = null;
+  let transaction = null;
 
   try {
-    // Verificar identidad del administrador.
     const admin = await verifyAdmin(req);
 
     if (!admin.valid) {
-      return send(res, admin.status, {
+      return res.status(admin.status).json({
         error: admin.status === 403
           ? "No estás autorizado para realizar el sorteo."
           : "Debés iniciar sesión como administrador."
       });
     }
 
-    const raffleId = req.body?.raffleId || RAFFLE_ID;
+    const raffleId = req.body?.raffleId;
 
-    if (raffleId !== RAFFLE_ID) {
-      return send(res, 400, {
-        error: "ID de sorteo no válido."
-      });
+    if (typeof raffleId !== "string" || !ID_PATTERN.test(raffleId)) {
+      return res.status(400).json({ error: "ID de sorteo no válido." });
     }
 
-    // Obtener credenciales de Google Cloud.
-    const token = await getGoogleAccessToken();
+    token = await getGoogleAccessToken();
 
-    // Iniciar transacción.
     const started = await firestoreRequest(
       `${ROOT}:beginTransaction`,
       token,
       {
         method: "POST",
-        body: JSON.stringify({
-          options: { readWrite: {} }
-        })
+        body: JSON.stringify({ options: { readWrite: {} } })
       }
     );
 
@@ -241,9 +104,10 @@ module.exports = async (req, res) => {
       throw new Error("No se pudo iniciar la transacción.");
     }
 
-    // Leer el sorteo.
+    const raffleUrl = `${ROOT}/raffles/${raffleId}`;
+
     const raffleDocument = await firestoreRequest(
-      `${ROOT}/raffles/${raffleId}?transaction=${encodeURIComponent(transaction)}`,
+      `${raffleUrl}?transaction=${encodeURIComponent(transaction)}`,
       token
     );
 
@@ -251,40 +115,30 @@ module.exports = async (req, res) => {
     const raffleStatus = getString(raffleFields, "status");
 
     if (raffleStatus === "drawn") {
-      throw new Error("Este sorteo ya fue realizado.");
+      throw new DrawError("Este sorteo ya fue realizado.");
     }
 
     if (raffleStatus !== "closed") {
-      throw new Error(
+      throw new DrawError(
         "Primero tenés que cerrar la venta desde el administrador."
       );
     }
 
     const winnerCount = getNumber(raffleFields, "winners");
 
-    if (winnerCount !== 2) {
-  throw new Error("Este sorteo debe tener exactamente 2 ganadores.");
+    if (![1, 2, 3].includes(winnerCount)) {
+      throw new DrawError(
+        "La cantidad de ganadores del sorteo no es válida."
+      );
     }
 
-    // Consultar reservas pendientes.
+    // Las reservas vigentes todavía pueden pagarse: hay que esperarlas.
     const pendingReservations = await runQuery(
       ROOT,
       "reservations",
       [
-        {
-          fieldFilter: {
-            field: { fieldPath: "raffleId" },
-            op: "EQUAL",
-            value: { stringValue: raffleId }
-          }
-        },
-        {
-          fieldFilter: {
-            field: { fieldPath: "status" },
-            op: "EQUAL",
-            value: { stringValue: "pending" }
-          }
-        }
+        equalFilter("raffleId", { stringValue: raffleId }),
+        equalFilter("status", { stringValue: "pending" })
       ],
       token,
       transaction
@@ -292,58 +146,43 @@ module.exports = async (req, res) => {
 
     const now = Date.now();
 
-    // Solo bloquear reservas que todavía están vigentes.
-    const activeReservations = pendingReservations.filter(doc => {
-      const expiry = getTimestamp(doc.fields, "expiresAt");
-
+    const activeReservations = pendingReservations.filter(document => {
+      const expiry = getTimestamp(document.fields, "expiresAt");
       return expiry && Date.parse(expiry) > now;
     });
 
     if (activeReservations.length > 0) {
-      throw new Error(
-        `Hay ${activeReservations.length} reservas todavía vigentes. Esperá a que se resuelvan antes del sorteo.`
+      throw new DrawError(
+        `Hay ${activeReservations.length} reservas todavía vigentes. Esperá a que se resuelvan o confirmá sus pagos antes del sorteo.`
       );
     }
 
-    // Consultar exclusivamente números pagados.
+    // Solo participan los números pagados.
     const paidTickets = await runQuery(
-      `${ROOT}/raffles/${raffleId}`,
+      raffleUrl,
       "tickets",
-      [
-        {
-          fieldFilter: {
-            field: { fieldPath: "status" },
-            op: "EQUAL",
-            value: { stringValue: "paid" }
-          }
-        }
-      ],
+      [equalFilter("status", { stringValue: "paid" })],
       token,
       transaction
     );
 
     const eligibleTickets = paidTickets
-      .filter(doc => doc.fields?.paid?.booleanValue === true)
-      .map(doc => ({
-        number: doc.name.split("/").pop(),
-        name: getString(doc.fields, "participantName").trim()
+      .filter(document => document.fields?.paid?.booleanValue === true)
+      .map(document => ({
+        number: document.name.split("/").pop(),
+        name: getString(document.fields, "participantName").trim()
       }))
-      .filter(ticket =>
-        /^\d{3}$/.test(ticket.number) &&
-        ticket.name.length > 0
+      .filter(
+        ticket => /^\d{3}$/.test(ticket.number) && ticket.name.length > 0
       );
 
     if (eligibleTickets.length < winnerCount) {
-      throw new Error(
+      throw new DrawError(
         `Se necesitan ${winnerCount} números pagados con participante registrado. Actualmente hay ${eligibleTickets.length}.`
       );
     }
 
-    // Selección aleatoria segura en el servidor.
-    const selected = randomWinners(
-      eligibleTickets,
-      winnerCount
-    );
+    const selected = randomWinners(eligibleTickets, winnerCount);
 
     const winnerValues = selected.map(winner => ({
       mapValue: {
@@ -354,74 +193,55 @@ module.exports = async (req, res) => {
       }
     }));
 
-    // Guardar el resultado definitivamente.
-    await firestoreRequest(
-      `${ROOT}:commit`,
-      token,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          transaction,
-          writes: [
-            {
-              update: {
-                name: `${ROOT}/raffles/${raffleId}`,
-                fields: {
-                  status: { stringValue: "drawn" },
-                  drawResults: {
-                    arrayValue: {
-                      values: winnerValues
-                    }
-                  },
-                  drawnAt: {
-                    timestampValue: new Date().toISOString()
-                  }
-                }
-              },
-              updateMask: {
-                fieldPaths: [
-                  "status",
-                  "drawResults",
-                  "drawnAt"
-                ]
+    await firestoreRequest(`${ROOT}:commit`, token, {
+      method: "POST",
+      body: JSON.stringify({
+        transaction,
+        writes: [
+          {
+            update: {
+              name: `${DOCS}/raffles/${raffleId}`,
+              fields: {
+                status: { stringValue: "drawn" },
+                drawResults: { arrayValue: { values: winnerValues } },
+                drawnAt: { timestampValue: new Date().toISOString() }
               }
+            },
+            updateMask: {
+              fieldPaths: ["status", "drawResults", "drawnAt"]
             }
-          ]
-        })
-      }
-    );
+          }
+        ]
+      })
+    });
 
     transaction = null;
 
-    return send(res, 200, {
+    return res.status(200).json({
       success: true,
       message: "Sorteo realizado correctamente.",
       winners: selected
     });
-
   } catch (error) {
     console.error("Error realizando sorteo:", error);
 
-    if (transaction) {
+    if (transaction && token) {
       try {
-        const token = await getGoogleAccessToken();
-
-        await firestoreRequest(
-          `${ROOT}:rollback`,
-          token,
-          {
-            method: "POST",
-            body: JSON.stringify({ transaction })
-          }
-        );
+        await firestoreRequest(`${ROOT}:rollback`, token, {
+          method: "POST",
+          body: JSON.stringify({ transaction })
+        });
       } catch (rollbackError) {
         console.error("Error cerrando transacción:", rollbackError);
       }
     }
 
-    return send(res, 400, {
-      error: error.message || "No se pudo realizar el sorteo."
+    if (error instanceof DrawError) {
+      return res.status(409).json({ error: error.message });
+    }
+
+    return res.status(500).json({
+      error: "No se pudo realizar el sorteo. Intentá de nuevo."
     });
   }
 };
-    

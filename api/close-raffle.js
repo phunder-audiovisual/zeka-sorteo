@@ -1,96 +1,18 @@
+"use strict";
 
-const PROJECT_ID = process.env.GCP_PROJECT_ID;
-const RAFFLE_ID = "fHG7phVJcVHScDpuzx1B";
-const ADMIN_UID = "GJe2WMAvJsdLtaaqfYT38fjJOVh1";
+const {
+  DOCS,
+  ROOT,
+  ID_PATTERN,
+  HttpError,
+  getString,
+  verifyAdmin,
+  getGoogleAccessToken,
+  firestoreRequest
+} = require("../lib/google");
 
-async function getGoogleAccessToken() {
-  const {
-    GCP_PROJECT_NUMBER,
-    GCP_SERVICE_ACCOUNT_EMAIL,
-    GCP_WORKLOAD_IDENTITY_POOL_ID,
-    GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID
-  } = process.env;
-
-  if (
-    !PROJECT_ID ||
-    !GCP_PROJECT_NUMBER ||
-    !GCP_SERVICE_ACCOUNT_EMAIL ||
-    !GCP_WORKLOAD_IDENTITY_POOL_ID ||
-    !GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID
-  ) {
-    throw new Error("Faltan variables de Google Cloud.");
-  }
-
-  const { getVercelOidcToken } = await import("@vercel/oidc");
-  const { ExternalAccountClient } = require("google-auth-library");
-
-  const audience =
-    `//iam.googleapis.com/projects/${GCP_PROJECT_NUMBER}` +
-    `/locations/global/workloadIdentityPools/` +
-    `${GCP_WORKLOAD_IDENTITY_POOL_ID}/providers/` +
-    `${GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID}`;
-
-  const client = ExternalAccountClient.fromJSON({
-    type: "external_account",
-    audience,
-    subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
-    token_url: "https://sts.googleapis.com/v1/token",
-    service_account_impersonation_url:
-      `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/` +
-      `${GCP_SERVICE_ACCOUNT_EMAIL}:generateAccessToken`,
-    subject_token_supplier: {
-      getSubjectToken: async () => await getVercelOidcToken()
-    }
-  });
-
-  if (!client) throw new Error("Error creando cliente Google.");
-
-  const result = await client.getAccessToken();
-  if (!result.token) throw new Error("No se obtuvo token Google.");
-
-  return result.token;
-}
-
-async function verifyAdmin(req) {
-  const header = req.headers.authorization || "";
-  const idToken = header.startsWith("Bearer ") ? header.slice(7) : "";
-
-  if (!idToken || !process.env.FIREBASE_API_KEY) return false;
-
-  const response = await fetch(
-    `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${process.env.FIREBASE_API_KEY}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ idToken })
-    }
-  );
-
-  if (!response.ok) return false;
-
-  const data = await response.json();
-  return data.users?.[0]?.localId === ADMIN_UID;
-}
-
-async function firestoreRequest(url, token, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    }
-  });
-
-  const text = await response.text();
-
-  if (!response.ok) {
-    console.error("Firestore:", text);
-    throw new Error("Error consultando Firestore.");
-  }
-
-  return text ? JSON.parse(text) : {};
-}
+// Cierra la venta de un sorteo (solo administrador). Las reservas
+// anteriores al cierre todavía pueden completar su pago.
 
 module.exports = async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
@@ -100,50 +22,57 @@ module.exports = async (req, res) => {
   }
 
   try {
-    if (!PROJECT_ID) throw new Error("Falta GCP_PROJECT_ID.");
+    const admin = await verifyAdmin(req);
 
-    if (!(await verifyAdmin(req))) {
-      return res.status(403).json({
-        error: "No estás autorizado para cerrar la venta."
+    if (!admin.valid) {
+      return res.status(admin.status).json({
+        error: admin.status === 403
+          ? "No estás autorizado para cerrar la venta."
+          : "Debés iniciar sesión como administrador."
       });
+    }
+
+    const raffleId = req.body?.raffleId;
+
+    if (typeof raffleId !== "string" || !ID_PATTERN.test(raffleId)) {
+      return res.status(400).json({ error: "ID de sorteo no válido." });
     }
 
     const token = await getGoogleAccessToken();
 
-    const base =
-      `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}` +
-      `/databases/(default)/documents`;
+    let raffle;
 
-    const raffleUrl = `${base}/raffles/${RAFFLE_ID}`;
+    try {
+      raffle = await firestoreRequest(`${ROOT}/raffles/${raffleId}`, token);
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) {
+        return res.status(404).json({ error: "No se encontró el sorteo." });
+      }
+      throw error;
+    }
 
-    const raffle = await firestoreRequest(raffleUrl, token);
-
-    if (raffle.fields?.status?.stringValue !== "open") {
+    if (getString(raffle.fields, "status") !== "open") {
       return res.status(409).json({
         error: "La venta ya está cerrada o el sorteo ya fue realizado."
       });
     }
 
-    await firestoreRequest(`${base}:commit`, token, {
+    await firestoreRequest(`${ROOT}:commit`, token, {
       method: "POST",
       body: JSON.stringify({
-        writes: [{
-          update: {
-            name: raffle.name,
-            fields: {
-              status: { stringValue: "closed" },
-              closedAt: {
-                timestampValue: new Date().toISOString()
+        writes: [
+          {
+            update: {
+              name: `${DOCS}/raffles/${raffleId}`,
+              fields: {
+                status: { stringValue: "closed" },
+                closedAt: { timestampValue: new Date().toISOString() }
               }
-            }
-          },
-          updateMask: {
-            fieldPaths: ["status", "closedAt"]
-          },
-          currentDocument: {
-            updateTime: raffle.updateTime
+            },
+            updateMask: { fieldPaths: ["status", "closedAt"] },
+            currentDocument: { updateTime: raffle.updateTime }
           }
-        }]
+        ]
       })
     });
 
@@ -151,12 +80,9 @@ module.exports = async (req, res) => {
       success: true,
       message: "Venta cerrada correctamente."
     });
-
   } catch (error) {
     console.error("Error cerrando sorteo:", error);
 
-    return res.status(500).json({
-      error: "No se pudo cerrar la venta."
-    });
+    return res.status(500).json({ error: "No se pudo cerrar la venta." });
   }
 };

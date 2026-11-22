@@ -203,7 +203,17 @@
       onSnapshot
     } from "https://www.gstatic.com/firebasejs/13.4.0/firebase-firestore.js";
 
-    const RAFFLE_ID = "fHG7phVJcVHScDpuzx1B";
+    // El sorteo se indica con ?raffle=ID (el panel de administración arma el
+    // enlace). Si falta, se usa el sorteo de ZEKA.
+    const DEFAULT_RAFFLE_ID = "fHG7phVJcVHScDpuzx1B";
+
+    const requestedId =
+      new URLSearchParams(window.location.search).get("raffle");
+
+    const RAFFLE_ID =
+      requestedId && /^[A-Za-z0-9_-]{1,150}$/.test(requestedId)
+        ? requestedId
+        : DEFAULT_RAFFLE_ID;
 
     const numberDisplay = document.getElementById("number");
     const statusDisplay = document.getElementById("status");
@@ -282,7 +292,7 @@
     async function showResults(results) {
       if (animationStarted) return;
 
-      if (!Array.isArray(results) || results.length !== 2) {
+      if (!Array.isArray(results) || results.length < 1) {
         errorDisplay.textContent =
           "Los resultados guardados no tienen el formato esperado.";
         return;
@@ -294,14 +304,18 @@
       statusDisplay.textContent =
         "¡El sorteo comenzó! Mucha suerte.";
 
-      await animateWinner(results[0], 1);
+      for (let i = 0; i < results.length; i++) {
+        if (i > 0) {
+          await new Promise(resolve => setTimeout(resolve, 1200));
+        }
 
-      await new Promise(resolve => setTimeout(resolve, 1200));
-
-      await animateWinner(results[1], 2);
+        await animateWinner(results[i], i + 1);
+      }
 
       statusDisplay.textContent =
-        "¡Sorteo finalizado! Estos son los ganadores oficiales.";
+        results.length === 1
+          ? "¡Sorteo finalizado! Este es el ganador oficial."
+          : "¡Sorteo finalizado! Estos son los ganadores oficiales.";
     }
 
     const raffleRef = doc(db, "raffles", RAFFLE_ID);

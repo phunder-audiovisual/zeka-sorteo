@@ -9,8 +9,7 @@ import {
   Timestamp,
   serverTimestamp,
   query,
-  where,
-  updateDoc
+  where
 } from "https://www.gstatic.com/firebasejs/13.4.0/firebase-firestore.js";
 
 import {
@@ -153,17 +152,36 @@ async function restoreReservationCountdown() {
 
     const reservation = activeReservations[0];
 
-    $("reservationNotice").textContent =
-      "✅ Encontramos tu reserva. Todavía tenés tiempo para completar el pago.";
-
     $("reservationNotice").hidden = false;
     $("reservationNotice").style.display = "block";
 
     showPaymentPanel(reservation);
 
-    showReservationCountdown(
-      reservation.expiresAt.toMillis()
-    );
+    if (reservation.paymentReported) {
+      // Pago por transferencia ya informado: el administrador lo verifica,
+      // no hace falta mostrar la cuenta regresiva.
+      $("reservationNotice").textContent =
+        "✅ Informaste tu pago. Tus números quedan reservados mientras el administrador verifica tu transferencia.";
+
+      if (reservationCountdownInterval) {
+        clearInterval(reservationCountdownInterval);
+        reservationCountdownInterval = null;
+      }
+
+      const countdown = $("reservationCountdown");
+
+      if (countdown) {
+        countdown.style.display = "none";
+      }
+
+    } else {
+      $("reservationNotice").textContent =
+        "✅ Encontramos tu reserva. Todavía tenés tiempo para completar el pago.";
+
+      showReservationCountdown(
+        reservation.expiresAt.toMillis()
+      );
+    }
 
   } catch (error) {
     console.warn(
@@ -195,6 +213,8 @@ const paymentAccounts = {
 };
 
 function showPaymentPanel(reservation) {
+  const previousId = activeReservation?.id;
+
   activeReservation = reservation;
 
   const panel = $("paymentPanel");
@@ -206,7 +226,11 @@ function showPaymentPanel(reservation) {
   panel.hidden = false;
   total.textContent = money(reservation.total || 0);
 
-  method.value = reservation.paymentMethod || "";
+  // Solo se cambia el medio de pago si es otra reserva o si ya fue informado;
+  // así el refresco automático no borra lo que el cliente eligió.
+  if (previousId !== reservation.id || reservation.paymentMethod) {
+    method.value = reservation.paymentMethod || "";
+  }
 
   updatePaymentDetails();
 }
@@ -258,6 +282,8 @@ function updatePaymentDetails() {
 
   details.hidden = false;
   title.textContent = account.title;
+  $("paymentAlias").textContent = account.alias;
+  $("paymentCbu").textContent = account.cbu;
 
   mpButton.hidden = !isMercadoPago;
   doneButton.hidden = isMercadoPago;
@@ -411,26 +437,45 @@ $("paymentDoneBtn").addEventListener("click", async () => {
   message.textContent = "Registrando aviso de pago...";
 
   try {
-    await updateDoc(
-      doc(db, "reservations", activeReservation.id),
-      {
-        paymentMethod: method,
-        paymentReported: true,
-        paymentReportedAt: serverTimestamp()
-      }
-    );
+    if (!auth.currentUser) {
+      throw new Error("No se pudo identificar al participante.");
+    }
+
+    const token = await auth.currentUser.getIdToken();
+
+    const response = await fetch("/api/report-payment", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + token
+      },
+      body: JSON.stringify({
+        reservationId: activeReservation.id,
+        method
+      })
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok || !data.success) {
+      throw new Error(
+        data.error || "No se pudo informar el pago. Intentá nuevamente."
+      );
+    }
 
     activeReservation.paymentMethod = method;
     activeReservation.paymentReported = true;
 
     message.textContent =
-      "¡Pago informado! El administrador verificará tu transferencia.";
+      "¡Pago informado! Tus números quedan reservados mientras el administrador verifica tu transferencia.";
+
+    await loadRaffle();
 
   } catch (error) {
     console.error(error);
 
     message.textContent =
-      "No se pudo informar el pago. Intentá nuevamente.";
+      error.message || "No se pudo informar el pago. Intentá nuevamente.";
 
   } finally {
     button.disabled = false;
@@ -596,6 +641,20 @@ function updateSelection() {
     !raffleIsOpen || selectedNumbers.length === 0;
 }
 
+// PROGRESO DE VENTAS (números ya pagados).
+function updateProgress(quantity) {
+  const sold = currentPublicTickets.filter(
+    ticket => ticket.status === "occupied"
+  ).length;
+
+  $("soldCount").textContent = `${sold} / ${quantity}`;
+
+  $("progressBar").style.width =
+    quantity
+      ? `${Math.min(100, sold / quantity * 100)}%`
+      : "0%";
+}
+
 // MOSTRAR NÚMEROS.
 function renderNumbers(publicTickets, quantity) {
   const grid = $("numbersGrid");
@@ -741,16 +800,7 @@ async function loadRaffle() {
       winners.textContent = currentRaffle.winners;
     }
 
-    const sold = Number(currentRaffle.soldCount) || 0;
     const quantity = Number(currentRaffle.quantity) || 0;
-
-    $("soldCount").textContent =
-      `${sold} / ${quantity}`;
-
-    $("progressBar").style.width =
-      quantity
-        ? `${Math.min(100, sold / quantity * 100)}%`
-        : "0%";
 
     let ticketsSnapshot = await getDocs(
       collection(
@@ -793,6 +843,8 @@ async function loadRaffle() {
         })
       );
     }
+
+    updateProgress(quantity);
 
     renderNumbers(
       currentPublicTickets,

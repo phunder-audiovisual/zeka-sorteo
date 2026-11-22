@@ -1,4 +1,3 @@
-
 import { auth, db } from "./firebase.js";
 
 import {
@@ -14,11 +13,14 @@ import {
   writeBatch,
   updateDoc,
   serverTimestamp,
-  deleteField
+  deleteField,
+  query,
+  where
 } from "https://www.gstatic.com/firebasejs/13.4.0/firebase-firestore.js";
 
+// Solo sirve para mostrar u ocultar el panel. La seguridad real está en las
+// reglas de Firestore y en las funciones de /api, que repiten esta comprobación.
 const ADMIN_UID = "GJe2WMAvJsdLtaaqfYT38fjJOVh1";
-const ZEKA_RAFFLE_ID = "fHG7phVJcVHScDpuzx1B";
 
 const $ = id => document.getElementById(id);
 
@@ -31,6 +33,14 @@ const raffleForm = $("raffleForm");
 
 let currentRaffles = [];
 
+const STATUS_LABELS = {
+  preparing: "Preparando números",
+  open: "Venta abierta",
+  closed: "Venta cerrada",
+  drawn: "Sorteo realizado",
+  failed: "Falló la creación"
+};
+
 function money(value) {
   return Number(value || 0).toLocaleString("es-AR", {
     style: "currency",
@@ -41,8 +51,40 @@ function money(value) {
 
 function showMessage(element, message, error = false) {
   if (!element) return;
+
   element.textContent = message;
   element.style.color = error ? "#ff5252" : "#00c853";
+}
+
+// Llama a una función de /api como administrador.
+async function callApi(endpoint, body) {
+  if (!auth.currentUser) {
+    throw new Error("Tu sesión venció. Volvé a iniciar sesión.");
+  }
+
+  const idToken = await auth.currentUser.getIdToken();
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  // Si el servidor devuelve algo que no es JSON (por ejemplo un error de
+  // Vercel), se muestra un mensaje claro en vez de "Unexpected token <".
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(
+      data.error ||
+      `El servidor respondió con un error (${response.status}).`
+    );
+  }
+
+  return data;
 }
 
 // --------------------------------------------------
@@ -73,7 +115,9 @@ onAuthStateChanged(auth, async user => {
   if (user && user.uid === ADMIN_UID) {
     loginSection.hidden = true;
     dashboard.hidden = false;
+
     showMessage(loginMessage, "");
+
     await loadRaffles();
     return;
   }
@@ -87,6 +131,7 @@ onAuthStateChanged(auth, async user => {
       "Esta cuenta no tiene permisos de administrador.",
       true
     );
+
     await signOut(auth);
   }
 });
@@ -96,18 +141,19 @@ $("logoutBtn").addEventListener("click", async () => {
 });
 
 // --------------------------------------------------
-// ESTADÍSTICAS
+// ESTADÍSTICAS (reservas pagadas de todos los sorteos)
 // --------------------------------------------------
 
 async function loadStatistics() {
   try {
     const snapshot = await getDocs(
-      collection(db, "reservations")
+      query(
+        collection(db, "reservations"),
+        where("status", "==", "paid")
+      )
     );
 
-    const paidReservations = snapshot.docs
-      .map(item => item.data())
-      .filter(item => item.status === "paid");
+    const paidReservations = snapshot.docs.map(item => item.data());
 
     const participants = new Set(
       paidReservations
@@ -125,6 +171,7 @@ async function loadStatistics() {
 
   } catch (error) {
     console.error("Error cargando estadísticas:", error);
+
     $("totalParticipants").textContent = "—";
     $("totalRevenue").textContent = "—";
   }
@@ -139,6 +186,7 @@ if (raffleForm) {
     event.preventDefault();
 
     const message = $("raffleMessage");
+
     const button = raffleForm.querySelector(
       'button[type="submit"]'
     );
@@ -159,7 +207,11 @@ if (raffleForm) {
     }
 
     if (!Number.isSafeInteger(price) || price < 1) {
-      showMessage(message, "El precio debe ser un número entero mayor a cero.", true);
+      showMessage(
+        message,
+        "El precio debe ser un número entero mayor a cero.",
+        true
+      );
       return;
     }
 
@@ -174,11 +226,13 @@ if (raffleForm) {
     }
 
     button.disabled = true;
+
     showMessage(message, "Creando sorteo y preparando números...");
 
-    try {
-      const raffleRef = doc(collection(db, "raffles"));
+    const raffleRef = doc(collection(db, "raffles"));
+    let raffleCreated = false;
 
+    try {
       const operations = [];
 
       operations.push({
@@ -189,8 +243,6 @@ if (raffleForm) {
           price,
           winners,
           status: "preparing",
-          soldCount: 0,
-          paidCount: 0,
           createdBy: auth.currentUser.uid,
           createdAt: serverTimestamp()
         }
@@ -199,24 +251,8 @@ if (raffleForm) {
       for (let i = 1; i <= quantity; i++) {
         const number = String(i).padStart(3, "0");
 
-        const privateRef = doc(
-          db,
-          "raffles",
-          raffleRef.id,
-          "tickets",
-          number
-        );
-
-        const publicRef = doc(
-          db,
-          "raffles",
-          raffleRef.id,
-          "publicTickets",
-          number
-        );
-
         operations.push({
-          ref: privateRef,
+          ref: doc(db, "raffles", raffleRef.id, "tickets", number),
           data: {
             number,
             status: "available",
@@ -228,7 +264,7 @@ if (raffleForm) {
         });
 
         operations.push({
-          ref: publicRef,
+          ref: doc(db, "raffles", raffleRef.id, "publicTickets", number),
           data: {
             number,
             status: "available"
@@ -240,26 +276,22 @@ if (raffleForm) {
       // Se usan lotes de 400 para mantener margen.
       for (let i = 0; i < operations.length; i += 400) {
         const batch = writeBatch(db);
-        const group = operations.slice(i, i + 400);
 
-        group.forEach(operation => {
+        operations.slice(i, i + 400).forEach(operation => {
           batch.set(operation.ref, operation.data);
         });
 
         await batch.commit();
+
+        // El primer lote contiene el documento del sorteo.
+        raffleCreated = true;
       }
 
       // El sorteo queda visible solamente cuando
       // todos sus números están creados.
-      await updateDoc(raffleRef, {
-        status: "open"
-      });
+      await updateDoc(raffleRef, { status: "open" });
 
       raffleForm.reset();
-      $("numberCount").value = "100";
-      $("ticketPrice").value = "1000";
-      $("winnerCount").value = "2";
-
       updateEstimatedRevenue();
 
       showMessage(message, "Sorteo creado correctamente.");
@@ -269,11 +301,25 @@ if (raffleForm) {
     } catch (error) {
       console.error("Error creando sorteo:", error);
 
+      // Si el sorteo quedó a medias, se marca como fallido para que
+      // nunca se publique con números incompletos.
+      if (raffleCreated) {
+        try {
+          await updateDoc(raffleRef, { status: "failed" });
+        } catch (markError) {
+          console.error("No se pudo marcar el sorteo:", markError);
+        }
+      }
+
       showMessage(
         message,
         "No se pudo completar la creación: " + error.message,
         true
       );
+
+      if (raffleCreated) {
+        await loadRaffles();
+      }
 
     } finally {
       button.disabled = false;
@@ -311,13 +357,65 @@ updateEstimatedRevenue();
 // CARGAR SORTEOS
 // --------------------------------------------------
 
+function createButton(text, onClick) {
+  const button = document.createElement("button");
+
+  button.type = "button";
+  button.textContent = text;
+  button.style.marginTop = "8px";
+  button.style.marginRight = "8px";
+  button.addEventListener("click", onClick);
+
+  return button;
+}
+
+function winnersText(raffle) {
+  if (!Array.isArray(raffle.drawResults)) return "";
+
+  return raffle.drawResults
+    .map(
+      (winner, index) =>
+        `🏆 Ganador ${index + 1}: N° ${winner.number} — ${winner.name}`
+    )
+    .join("\n");
+}
+
+async function runRaffleAction(raffle, button) {
+  const isClosing = raffle.status === "open";
+  const count = Number(raffle.winners) || 1;
+
+  const question = isClosing
+    ? "¿Querés cerrar la venta? Las reservas anteriores podrán completar sus pagos."
+    : `¿Querés realizar el sorteo? Se elegirá ${count === 1 ? "1 ganador" : count + " ganadores"} entre los números pagados.`;
+
+  if (!confirm(question)) return;
+
+  button.disabled = true;
+
+  try {
+    await callApi(
+      isClosing ? "/api/close-raffle" : "/api/draw-raffle",
+      { raffleId: raffle.id }
+    );
+
+    alert(
+      isClosing
+        ? "Venta cerrada. Las reservas anteriores podrán completar sus pagos."
+        : "¡Sorteo realizado correctamente! Tocá «Ver ruleta en vivo» para mostrar los resultados."
+    );
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    button.disabled = false;
+    await loadRaffles();
+  }
+}
+
 async function loadRaffles() {
   raffleList.textContent = "Cargando sorteos...";
 
   try {
-    const snapshot = await getDocs(
-      collection(db, "raffles")
-    );
+    const snapshot = await getDocs(collection(db, "raffles"));
 
     currentRaffles = snapshot.docs.map(item => ({
       id: item.id,
@@ -349,129 +447,76 @@ async function loadRaffles() {
 
       const info = document.createElement("p");
       info.textContent =
-        `${raffle.quantity} números · ${money(raffle.price)} · ${raffle.winners} ganadores`;
+        `${raffle.quantity} números · ${money(raffle.price)} · ${raffle.winners} ganador${raffle.winners === 1 ? "" : "es"}`;
 
       const status = document.createElement("p");
-      status.textContent = "Estado: " + (raffle.status || "desconocido");
+      status.textContent =
+        "Estado: " + (STATUS_LABELS[raffle.status] || raffle.status || "desconocido");
 
       const id = document.createElement("p");
       id.textContent = "ID: " + raffle.id;
 
-      const syncButton = document.createElement("button");
-      syncButton.type = "button";
-      syncButton.textContent = "Sincronizar números públicos";
-      syncButton.addEventListener("click", async () => {
-        syncButton.disabled = true;
+      card.append(title, info, status, id);
 
-        try {
-          await syncPublicTickets(raffle);
-          alert("Números públicos sincronizados.");
-        } catch (error) {
-          alert("Error al sincronizar: " + error.message);
-        } finally {
-          syncButton.disabled = false;
-        }
-      });
+      if (raffle.status === "failed") {
+        const warning = document.createElement("p");
+        warning.style.color = "#ff5252";
+        warning.textContent =
+          "La creación se interrumpió. Este sorteo no se publica: creá uno nuevo.";
+        card.appendChild(warning);
+      }
 
-      const reservationsButton = document.createElement("button");
-      reservationsButton.type = "button";
-      reservationsButton.textContent = "Ver participantes y reservas";
-      reservationsButton.style.marginLeft = "8px";
-      reservationsButton.addEventListener("click", () => {
-        loadReservations(raffle);
-      });
+      if (raffle.status !== "failed") {
+        const syncButton = createButton(
+          "Sincronizar números públicos",
+          async () => {
+            syncButton.disabled = true;
 
-      card.append(
-        title,
-        info,
-        status,
-        id,
-        syncButton,
-        reservationsButton
-      );
-
-      if (
-        raffle.id === ZEKA_RAFFLE_ID &&
-        raffle.status !== "drawn"
-      ) {
-        const drawButton = document.createElement("button");
-
-        drawButton.type = "button";
-        drawButton.textContent =
-          raffle.status === "open"
-            ? "Cerrar venta"
-            : raffle.status === "closed"
-              ? "Realizar sorteo"
-              : "Sorteo en preparación";
-
-        drawButton.style.display = "block";
-        drawButton.style.marginTop = "12px";
-
-        drawButton.disabled =
-          raffle.status !== "open" &&
-          raffle.status !== "closed";
-
-        drawButton.addEventListener("click", async () => {
-          if (
-            raffle.status === "open" &&
-            !confirm(
-              "¿Querés cerrar la venta? Las reservas anteriores podrán completar sus pagos."
-            )
-          ) return;
-
-          if (
-            raffle.status === "closed" &&
-            !confirm(
-              "¿Querés realizar el sorteo? Se elegirán los 2 ganadores entre los números pagados."
-            )
-          ) return;
-
-          drawButton.disabled = true;
-
-          try {
-            const idToken = await auth.currentUser.getIdToken();
-
-            const endpoint = raffle.status === "open"
-              ? "/api/close-raffle"
-              : "/api/draw-raffle";
-
-            const response = await fetch(endpoint, {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${idToken}`,
-                "Content-Type": "application/json"
-              }
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-              throw new Error(
-                data.error || "No se pudo completar la operación."
-              );
+            try {
+              await syncPublicTickets(raffle);
+              alert("Números públicos sincronizados.");
+            } catch (error) {
+              alert("Error al sincronizar: " + error.message);
+            } finally {
+              syncButton.disabled = false;
             }
-
-            if (raffle.status === "open") {
-              alert(
-                "Venta cerrada. Las reservas anteriores podrán completar sus pagos."
-              );
-            } else {
-              alert("¡Sorteo realizado correctamente!");
-              window.open("/ruleta.html", "_blank");
-            }
-
-            await loadRaffles();
-
-          } catch (error) {
-            alert(error.message);
-            await loadRaffles();
-
-          } finally {
-            drawButton.disabled = false;
           }
-        });
+        );
 
-        card.appendChild(drawButton);
+        const reservationsButton = createButton(
+          "Ver participantes y reservas",
+          () => loadReservations(raffle)
+        );
+
+        card.append(syncButton, reservationsButton);
+      }
+
+      if (raffle.status === "open" || raffle.status === "closed") {
+        const actionButton = createButton(
+          raffle.status === "open" ? "Cerrar venta" : "Realizar sorteo",
+          () => runRaffleAction(raffle, actionButton)
+        );
+
+        actionButton.style.display = "block";
+        actionButton.style.marginTop = "12px";
+
+        card.appendChild(actionButton);
+      }
+
+      if (raffle.status === "drawn") {
+        const winners = document.createElement("p");
+        winners.style.whiteSpace = "pre-line";
+        winners.textContent = winnersText(raffle);
+
+        const link = document.createElement("a");
+        link.href = "/ruleta.html?raffle=" + encodeURIComponent(raffle.id);
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = "Ver ruleta en vivo";
+        link.style.display = "inline-block";
+        link.style.marginTop = "12px";
+
+        card.append(winners, link);
       }
 
       raffleList.appendChild(card);
@@ -523,31 +568,26 @@ async function syncPublicTickets(raffle) {
     const publicData = {
       number: ticket.number || ticketDoc.id,
       status: publicStatus,
+
       reservationUid:
         publicStatus === "reserved"
           ? ticket.reservationUid || null
           : deleteField(),
+
       expiresAt:
         publicStatus === "reserved" && ticket.expiresAt
           ? ticket.expiresAt
           : deleteField()
     };
 
-    operations.push({
-      ref: publicRef,
-      data: publicData
-    });
+    operations.push({ ref: publicRef, data: publicData });
   });
 
   for (let i = 0; i < operations.length; i += 400) {
     const batch = writeBatch(db);
 
     operations.slice(i, i + 400).forEach(operation => {
-      batch.set(
-        operation.ref,
-        operation.data,
-        { merge: true }
-      );
+      batch.set(operation.ref, operation.data, { merge: true });
     });
 
     await batch.commit();
@@ -560,6 +600,17 @@ async function syncPublicTickets(raffle) {
 // VER PARTICIPANTES Y RESERVAS
 // --------------------------------------------------
 
+const PAYMENT_METHOD_LABELS = {
+  mercadopago: "Mercado Pago",
+  naranjax: "Naranja X",
+  cuentadni: "Cuenta DNI"
+};
+
+const RESERVATION_STATUS_LABELS = {
+  pending: "Pendiente de pago",
+  paid: "Pagada"
+};
+
 async function loadReservations(raffle) {
   const container = $("reservationsList");
 
@@ -567,7 +618,10 @@ async function loadReservations(raffle) {
 
   try {
     const snapshot = await getDocs(
-      collection(db, "reservations")
+      query(
+        collection(db, "reservations"),
+        where("raffleId", "==", raffle.id)
+      )
     );
 
     const reservations = snapshot.docs
@@ -575,7 +629,6 @@ async function loadReservations(raffle) {
         id: item.id,
         ...item.data()
       }))
-      .filter(item => item.raffleId === raffle.id)
       .sort((a, b) =>
         (b.createdAt?.toMillis?.() || 0) -
         (a.createdAt?.toMillis?.() || 0)
@@ -583,9 +636,14 @@ async function loadReservations(raffle) {
 
     container.replaceChildren();
 
+    const heading = document.createElement("h3");
+    heading.textContent = "Reservas de: " + (raffle.name || raffle.id);
+    container.appendChild(heading);
+
     if (!reservations.length) {
-      container.textContent =
-        "Todavía no hay reservas para este sorteo.";
+      const empty = document.createElement("p");
+      empty.textContent = "Todavía no hay reservas para este sorteo.";
+      container.appendChild(empty);
       return;
     }
 
@@ -609,26 +667,86 @@ async function loadReservations(raffle) {
           : "Sin números");
 
       const total = document.createElement("p");
-      total.textContent =
-        "Total: " + money(reservation.total);
+      total.textContent = "Total: " + money(reservation.total);
 
       const status = document.createElement("p");
       status.textContent =
-        "Estado del pago: " + (reservation.status || "desconocido");
+        "Estado del pago: " +
+        (RESERVATION_STATUS_LABELS[reservation.status] ||
+          reservation.status ||
+          "desconocido");
 
       const reservationId = document.createElement("small");
-      reservationId.textContent =
-        "Reserva: " + reservation.id;
+      reservationId.textContent = "Reserva: " + reservation.id;
 
-      card.append(
-        name,
-        phone,
-        numbers,
-        total,
-        status,
-        reservationId
-      );
+      card.append(name, phone, numbers, total, status);
 
+      if (reservation.paymentMethod) {
+        const method = document.createElement("p");
+        method.textContent =
+          "Medio de pago: " +
+          (PAYMENT_METHOD_LABELS[reservation.paymentMethod] ||
+            reservation.paymentMethod) +
+          (reservation.paymentReported && reservation.status === "pending"
+            ? " · el cliente avisó que ya pagó"
+            : "");
+        card.appendChild(method);
+      }
+
+      if (reservation.paymentIssue) {
+        const issue = document.createElement("p");
+        issue.style.color = "#ff5252";
+        issue.style.fontWeight = "bold";
+        issue.textContent =
+          "⚠️ Pago con problema (revisá y devolvé el dinero si corresponde): " +
+          reservation.paymentIssue +
+          (reservation.mpOrderId
+            ? " · Orden de Mercado Pago: " + reservation.mpOrderId
+            : "");
+        card.appendChild(issue);
+      }
+
+      if (reservation.status === "pending") {
+        const expires = reservation.expiresAt?.toDate?.();
+
+        if (expires) {
+          const expiry = document.createElement("p");
+          expiry.textContent =
+            "Los números quedan reservados hasta: " +
+            expires.toLocaleString("es-AR");
+          card.appendChild(expiry);
+        }
+
+        const confirmButton = createButton(
+          "Confirmar pago recibido",
+          async () => {
+            if (
+              !confirm(
+                `¿Confirmás que recibiste ${money(reservation.total)} de ${reservation.name || "este participante"}? Los números pasarán a pagados.`
+              )
+            ) return;
+
+            confirmButton.disabled = true;
+
+            try {
+              await callApi("/api/confirm-payment", {
+                reservationId: reservation.id
+              });
+
+              alert("Pago confirmado.");
+              await loadRaffles();
+              await loadReservations(raffle);
+            } catch (error) {
+              alert(error.message);
+              confirmButton.disabled = false;
+            }
+          }
+        );
+
+        card.appendChild(confirmButton);
+      }
+
+      card.appendChild(reservationId);
       container.appendChild(card);
     });
 
@@ -638,5 +756,4 @@ async function loadReservations(raffle) {
     container.textContent =
       "No se pudieron cargar las reservas: " + error.message;
   }
-    }
-                              
+}

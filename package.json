@@ -1,10 +1,16 @@
 {
   "name": "zeka-sorteo",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
+  "description": "Sitio de sorteos ZEKA-SORTEO (Firebase + Mercado Pago + Vercel)",
+  "scripts": {
+    "test": "node test/run-tests.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@vercel/oidc": "^3.0.0",
-    "google-auth-library": "^10.0.0",
-    "firebase-admin": "^13.5.0"
+    "google-auth-library": "^10.0.0"
   }
 }
