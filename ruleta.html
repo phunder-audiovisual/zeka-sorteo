@@ -49,8 +49,9 @@
     }
 
     .roulette {
-      width: 230px;
-      height: 230px;
+      --size: min(88vw, 440px);
+      width: var(--size);
+      height: var(--size);
       margin: 0 auto 25px;
       border-radius: 50%;
       border: 8px solid #38bdf8;
@@ -79,18 +80,57 @@
       border-radius: 50%;
     }
 
+    /* Anillo con los números de todos los participantes */
+    .ring {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .tick-arm {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 0;
+      height: 0;
+    }
+
+    .tick {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      font-weight: bold;
+      line-height: 1;
+      color: #bae6fd;
+      white-space: nowrap;
+      padding: 2px 3px;
+      border-radius: 4px;
+      transition: color .15s, background .15s;
+    }
+
+    .tick.active {
+      color: #020617;
+      background: #67e8f9;
+      box-shadow: 0 0 12px #22d3ee;
+    }
+
+    .tick.tick-win {
+      color: #422006;
+      background: #facc15;
+      box-shadow: 0 0 14px #facc15;
+    }
+
     .number {
       position: relative;
       z-index: 1;
-      width: 115px;
-      height: 115px;
+      width: 38%;
+      aspect-ratio: 1;
       border-radius: 50%;
       background: #020617;
       border: 3px solid #38bdf8;
       display: flex;
       justify-content: center;
       align-items: center;
-      font-size: 42px;
+      font-size: clamp(26px, 9vw, 46px);
       font-weight: bold;
       color: #67e8f9;
       box-shadow: 0 0 25px #0ea5e9;
@@ -104,6 +144,13 @@
       to {
         transform: rotate(360deg);
       }
+    }
+
+    .ring-note {
+      color: #94a3b8;
+      font-size: 13px;
+      min-height: 18px;
+      margin: -10px 0 10px;
     }
 
     .status {
@@ -179,8 +226,11 @@
     <p class="subtitle">Zeka internet Ilimitado ♾️</p>
 
     <div class="roulette">
+      <div class="ring" id="ring"></div>
       <div class="number" id="number">---</div>
     </div>
+
+    <div class="ring-note" id="ringNote"></div>
 
     <div class="status" id="status">
       El sorteo todavía no comenzó.
@@ -196,10 +246,16 @@
   </main>
 
   <script type="module">
-    import { db } from "./firebase.js";
+    import { db, auth } from "./firebase.js";
+
+    import {
+      signInAnonymously
+    } from "https://www.gstatic.com/firebasejs/13.4.0/firebase-auth.js";
 
     import {
       doc,
+      collection,
+      getDocs,
       onSnapshot
     } from "https://www.gstatic.com/firebasejs/13.4.0/firebase-firestore.js";
 
@@ -219,6 +275,9 @@
     const statusDisplay = document.getElementById("status");
     const winnersDisplay = document.getElementById("winners");
     const errorDisplay = document.getElementById("error");
+    const ringDisplay = document.getElementById("ring");
+    const rouletteBox = document.querySelector(".roulette");
+    const ringNote = document.getElementById("ringNote");
 
     let animationStarted = false;
 
@@ -237,55 +296,185 @@
         "Participante";
     }
 
-    function animateWinner(winner, position) {
-      return new Promise((resolve) => {
-        const finalNumber = String(getWinnerNumber(winner))
-          .padStart(3, "0");
+    // ---------- Anillo de números ----------
 
-        statusDisplay.textContent =
-          `Revelando al ganador ${position}...`;
+    let ringNumbers = [];
+    const tickElements = new Map();
 
-        numberDisplay.classList.add("spinning");
+    function padNumber(value) {
+      return String(value).padStart(3, "0");
+    }
 
-        let count = 0;
+    function renderRing(numbers) {
+      ringNumbers = numbers;
+      tickElements.clear();
+      ringDisplay.innerHTML = "";
 
-        const animation = setInterval(() => {
-          numberDisplay.textContent =
-            String(Math.floor(Math.random() * 1000))
-              .padStart(3, "0");
+      if (numbers.length === 0) return;
 
-          count++;
+      const box = rouletteBox.getBoundingClientRect();
+      const size = box.width || 300;
 
-          if (count >= 25) {
-            clearInterval(animation);
+      // Radio al que se ubican los números (cerca del borde interno).
+      const radius = size * 0.5 - 8 - 22;
+      const arc = (2 * Math.PI * radius) / numbers.length;
+      const fontSize = Math.max(7, Math.min(16, Math.floor(arc * 0.85)));
 
-            numberDisplay.classList.remove("spinning");
-            numberDisplay.textContent = finalNumber;
+      numbers.forEach((number, index) => {
+        const angle = (360 / numbers.length) * index;
 
-            const card = document.createElement("div");
-            card.className = "winner";
+        const arm = document.createElement("div");
+        arm.className = "tick-arm";
+        arm.style.transform = `rotate(${angle - 90}deg)`;
 
-            const title = document.createElement("h2");
-            title.textContent = `🏆 GANADOR ${position}`;
+        const tick = document.createElement("div");
+        tick.className = "tick";
+        tick.textContent = number;
+        tick.style.left = `${radius}px`;
+        tick.style.top = "0";
+        tick.style.fontSize = `${fontSize}px`;
 
-            const number = document.createElement("div");
-            number.className = "winner-number";
-            number.textContent = `N° ${finalNumber}`;
+        arm.appendChild(tick);
+        ringDisplay.appendChild(arm);
+        tickElements.set(number, tick);
+      });
+    }
 
-            const name = document.createElement("div");
-            name.className = "winner-name";
-            name.textContent = getWinnerName(winner);
+    function setActiveTick(number) {
+      tickElements.forEach(tick => tick.classList.remove("active"));
+      tickElements.get(number)?.classList.add("active");
+    }
 
-            card.append(title, number, name);
-            winnersDisplay.appendChild(card);
+    function markWinnerTick(number) {
+      tickElements.forEach(tick => tick.classList.remove("active"));
+      tickElements.get(number)?.classList.add("tick-win");
+    }
 
-            requestAnimationFrame(() => {
-              card.classList.add("show");
-            });
+    // El sitio entra con una sesión anónima invisible, igual que la página
+    // pública, para poder leer la lista de números.
+    async function ensureSession() {
+      try {
+        await auth.authStateReady?.();
 
-            resolve();
+        if (!auth.currentUser) {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.warn("No se pudo abrir la sesión anónima:", error);
+      }
+    }
+
+    // Números de todos los participantes (pagados) + los ganadores.
+    async function loadParticipants(results = []) {
+      const numbers = new Set();
+      let readFailed = false;
+
+      await ensureSession();
+
+      try {
+        const snapshot = await getDocs(
+          collection(db, "raffles", RAFFLE_ID, "publicTickets")
+        );
+
+        snapshot.forEach(document => {
+          const data = document.data();
+
+          if (data.status === "occupied") {
+            numbers.add(padNumber(data.number ?? document.id));
           }
-        }, 100);
+        });
+      } catch (error) {
+        readFailed = true;
+        console.warn("No se pudieron leer los participantes:", error);
+      }
+
+      // Los ganadores siempre figuran, aunque la lista pública esté desactualizada.
+      results.forEach(winner => {
+        numbers.add(padNumber(getWinnerNumber(winner)));
+      });
+
+      if (readFailed) {
+        ringNote.textContent =
+          "No se pudieron leer los números (revisá las reglas de Firestore).";
+      } else if (numbers.size === 0) {
+        ringNote.textContent =
+          "Todavía no hay números pagados publicados. En el panel tocá «Sincronizar números públicos».";
+      } else {
+        ringNote.textContent =
+          `${numbers.size} números participando`;
+      }
+
+      return [...numbers].sort();
+    }
+
+    async function refreshRing(results = []) {
+      const numbers = await loadParticipants(results);
+      renderRing(numbers);
+    }
+
+    function wait(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // Recorre el anillo frenando de a poco hasta caer en el ganador.
+    async function sweepRing(finalNumber) {
+      const total = ringNumbers.length;
+      const steps = 36;
+      const target = ringNumbers.indexOf(finalNumber);
+
+      for (let i = 0; i <= steps; i++) {
+        const index =
+          (((target - steps + i) % total) + total) % total;
+
+        const number = ringNumbers[index];
+
+        setActiveTick(number);
+        numberDisplay.textContent = number;
+
+        const progress = i / steps;
+        await wait(40 + 260 * progress ** 3);
+      }
+    }
+
+    async function animateWinner(winner, position) {
+      const finalNumber = padNumber(getWinnerNumber(winner));
+
+      statusDisplay.textContent =
+        `Revelando al ganador ${position}...`;
+
+      if (ringNumbers.includes(finalNumber)) {
+        await sweepRing(finalNumber);
+      } else {
+        // Sin anillo disponible: efecto de números al azar.
+        for (let i = 0; i < 25; i++) {
+          numberDisplay.textContent =
+            String(Math.floor(Math.random() * 1000)).padStart(3, "0");
+          await wait(100);
+        }
+      }
+
+      numberDisplay.textContent = finalNumber;
+      markWinnerTick(finalNumber);
+
+      const card = document.createElement("div");
+      card.className = "winner";
+
+      const title = document.createElement("h2");
+      title.textContent = `🏆 GANADOR ${position}`;
+
+      const number = document.createElement("div");
+      number.className = "winner-number";
+      number.textContent = `N° ${finalNumber}`;
+
+      const name = document.createElement("div");
+      name.className = "winner-name";
+      name.textContent = getWinnerName(winner);
+
+      card.append(title, number, name);
+      winnersDisplay.appendChild(card);
+
+      requestAnimationFrame(() => {
+        card.classList.add("show");
       });
     }
 
@@ -300,6 +489,8 @@
 
       animationStarted = true;
       winnersDisplay.innerHTML = "";
+
+      await refreshRing(results);
 
       statusDisplay.textContent =
         "¡El sorteo comenzó! Mucha suerte.";
@@ -317,6 +508,12 @@
           ? "¡Sorteo finalizado! Este es el ganador oficial."
           : "¡Sorteo finalizado! Estos son los ganadores oficiales.";
     }
+
+    refreshRing();
+
+    window.addEventListener("resize", () => {
+      if (!animationStarted) renderRing(ringNumbers);
+    });
 
     const raffleRef = doc(db, "raffles", RAFFLE_ID);
 
